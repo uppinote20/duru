@@ -1,0 +1,15 @@
+[package]
+name = "duru"
+version = "0.1.0"
+edition = "2024"
+description = "Terminal dashboard for Claude Code — explore, manage, and monitor your setup"
+license = "MIT"
+
+[dependencies]
+ratatui = "0.29"
+crossterm = "0.28"
+clap = { version = "4", features = ["derive"] }
+dirs = "6"
+
+[dev-dependencies]
+tempfile = "3"
