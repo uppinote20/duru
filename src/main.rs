@@ -1,3 +1,4 @@
+mod app;
 mod scan;
 mod theme;
 
