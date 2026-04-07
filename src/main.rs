@@ -1,3 +1,5 @@
+mod theme;
+
 use clap::Parser;
 
 #[derive(Parser)]
