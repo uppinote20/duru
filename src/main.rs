@@ -1,3 +1,4 @@
+mod scan;
 mod theme;
 
 use clap::Parser;
