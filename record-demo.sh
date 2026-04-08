@@ -11,7 +11,7 @@ cargo build --release 2>/dev/null
 # Automated recording via expect
 asciinema rec "$CAST_FILE" --cols 120 --rows 30 --overwrite --command "
 expect -c '
-    spawn ./target/release/duru
+    spawn ./target/release/duru --demo
     sleep 2
 
     # Navigate projects
