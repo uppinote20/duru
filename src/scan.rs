@@ -17,7 +17,7 @@ pub struct MemoryFile {
     pub size: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 #[allow(dead_code)]
 pub struct Project {
     pub name: String,
@@ -178,6 +178,20 @@ pub fn scan_claude_dir(claude_dir: &Path) -> Vec<Project> {
 
     // Sort projects alphabetically
     project_entries.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+
+    // Deduplicate: Claude Code has two encoding schemes (old: `_active`, new: `--active`)
+    // Keep the entry with more files; if equal, keep whichever comes first
+    project_entries.dedup_by(|b, a| {
+        if a.name == b.name {
+            if b.files.len() > a.files.len() {
+                *a = std::mem::take(b);
+            }
+            true
+        } else {
+            false
+        }
+    });
+
     projects.extend(project_entries);
 
     projects
