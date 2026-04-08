@@ -1,9 +1,9 @@
 use ratatui::{
+    Frame,
     layout::{Constraint, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, List, ListItem, Paragraph, Wrap},
-    Frame,
 };
 
 use crate::app::{App, Pane};
@@ -13,11 +13,7 @@ pub fn render(frame: &mut Frame, app: &App, theme: &Theme) {
     let area = frame.area();
 
     // Main area + 1-line help bar
-    let outer = Layout::vertical([
-        Constraint::Min(1),
-        Constraint::Length(1),
-    ])
-    .split(area);
+    let outer = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(area);
 
     // 3-pane layout: 30% | 30% | 40%
     let chunks = Layout::horizontal([

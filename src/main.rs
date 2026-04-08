@@ -9,9 +9,9 @@ use std::path::PathBuf;
 use clap::Parser;
 use crossterm::{
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use ratatui::{backend::CrosstermBackend, Terminal};
+use ratatui::{Terminal, backend::CrosstermBackend};
 
 use app::App;
 use scan::scan_claude_dir;
@@ -45,7 +45,10 @@ fn main() -> io::Result<()> {
 
     let projects = scan_claude_dir(&claude_dir);
     if projects.is_empty() {
-        eprintln!("no CLAUDE.md or memory files found in {}", claude_dir.display());
+        eprintln!(
+            "no CLAUDE.md or memory files found in {}",
+            claude_dir.display()
+        );
         std::process::exit(0);
     }
 

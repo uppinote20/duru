@@ -103,32 +103,35 @@ pub fn scan_claude_dir(claude_dir: &Path) -> Vec<Project> {
             if memory_dir.is_dir()
                 && let Ok(entries) = fs::read_dir(&memory_dir)
             {
-                    let mut memory_files: Vec<MemoryFile> = entries
-                        .filter_map(|e| e.ok())
-                        .filter(|e| {
-                            e.path().extension().is_some_and(|ext| ext == "md")
-                        })
-                        .map(|e| {
-                            let path = e.path();
-                            let name = e.file_name().to_string_lossy().to_string();
-                            let size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-                            let kind = if name == "MEMORY.md" {
-                                FileKind::MemoryIndex
-                            } else {
-                                FileKind::Memory
-                            };
-                            MemoryFile { kind, path, name, size }
-                        })
-                        .collect();
+                let mut memory_files: Vec<MemoryFile> = entries
+                    .filter_map(|e| e.ok())
+                    .filter(|e| e.path().extension().is_some_and(|ext| ext == "md"))
+                    .map(|e| {
+                        let path = e.path();
+                        let name = e.file_name().to_string_lossy().to_string();
+                        let size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                        let kind = if name == "MEMORY.md" {
+                            FileKind::MemoryIndex
+                        } else {
+                            FileKind::Memory
+                        };
+                        MemoryFile {
+                            kind,
+                            path,
+                            name,
+                            size,
+                        }
+                    })
+                    .collect();
 
-                    // MEMORY.md first, then alphabetical
-                    memory_files.sort_by(|a, b| {
-                        let a_is_index = a.kind == FileKind::MemoryIndex;
-                        let b_is_index = b.kind == FileKind::MemoryIndex;
-                        b_is_index.cmp(&a_is_index).then(a.name.cmp(&b.name))
-                    });
+                // MEMORY.md first, then alphabetical
+                memory_files.sort_by(|a, b| {
+                    let a_is_index = a.kind == FileKind::MemoryIndex;
+                    let b_is_index = b.kind == FileKind::MemoryIndex;
+                    b_is_index.cmp(&a_is_index).then(a.name.cmp(&b.name))
+                });
 
-                    files.extend(memory_files);
+                files.extend(memory_files);
             }
 
             // Skip projects with no files

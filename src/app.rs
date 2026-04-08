@@ -43,9 +43,9 @@ impl App {
     fn load_content(&mut self) {
         self.content = match self.selected_project() {
             Some(project) => match project.files.get(self.file_index) {
-                Some(file) => fs::read_to_string(&file.path).unwrap_or_else(|e| {
-                    format!("(read error: {e})")
-                }),
+                Some(file) => {
+                    fs::read_to_string(&file.path).unwrap_or_else(|e| format!("(read error: {e})"))
+                }
                 None => String::new(),
             },
             None => String::new(),
