@@ -3,7 +3,8 @@ name = "duru"
 version = "0.1.0"
 edition = "2024"
 description = "Terminal dashboard for Claude Code — explore, manage, and monitor your setup"
-license = "MIT"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/uppinote20/duru"
 
 [dependencies]
 ratatui = "0.29"
