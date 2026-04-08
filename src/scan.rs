@@ -26,25 +26,72 @@ pub struct Project {
 }
 
 /// Decode Claude Code's encoded project directory name to a human-readable name.
-/// Encoding: `/Users/kim/my-project` → `-Users-kim-my-project`
-/// We try to find the actual directory on disk, falling back to the last segment.
+///
+/// Claude Code encodes paths: `/` → `-`, `_` → `-`.
+/// So `/Users/kim/Project/_active/clavis` → `-Users-kim-Project--active-clavis`
+/// (`--active` = path separator `-` + underscore-replaced `-` from `_active`)
+///
+/// Strategy:
+/// 1. Replace `--` with `/_` to restore underscore-prefixed directories
+/// 2. Split by `-` and greedy-match against filesystem to resolve literal dashes
 fn decode_project_name(encoded: &str) -> String {
-    // Reconstruct path: leading `-` → `/`, remaining `-` → `/`
-    let decoded_path = encoded.replacen('-', "/", 1);
-    let path = Path::new(&decoded_path);
+    // Step 1: `--` → `/_` (restores underscore-prefixed dirs like `_active`)
+    let normalized = encoded.replace("--", "/_");
 
-    if path.exists()
-        && let Some(name) = path.file_name()
-    {
-        return name.to_string_lossy().to_string();
+    // Step 2: Split by `-`, keeping segments that may contain `/` from step 1
+    let segments: Vec<&str> = normalized.split('-').filter(|s| !s.is_empty()).collect();
+    if segments.is_empty() {
+        return encoded.to_string();
     }
 
-    // Fallback: take the last non-empty segment after splitting by `-`
-    encoded
-        .rsplit('-')
-        .find(|s| !s.is_empty())
-        .unwrap_or(encoded)
-        .to_string()
+    // Step 3: Greedy filesystem matching
+    let mut path = PathBuf::from("/");
+    let mut i = 0;
+    let mut last_matched = 0; // track where filesystem matching stops
+
+    while i < segments.len() {
+        let remaining = segments.len() - i;
+        let max_width = remaining.min(8);
+        let mut matched = false;
+
+        // Try wider joins first (e.g., "crypto-trading-bot" before "crypto")
+        for width in (1..=max_width).rev() {
+            let candidate_name = segments[i..i + width].join("-");
+            let candidate_path = path.join(&candidate_name);
+            if candidate_path.is_dir() {
+                path = candidate_path;
+                i += width;
+                last_matched = i;
+                matched = true;
+                break;
+            }
+        }
+
+        if !matched {
+            // No match — remaining segments form the project name
+            // Join them with `-` to preserve hyphenated directory names
+            let remainder = segments[i..].join("-");
+            return if remainder.is_empty() {
+                path.file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| encoded.to_string())
+            } else {
+                remainder
+            };
+        }
+    }
+
+    // All segments matched on filesystem
+    path.file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| {
+            // Fallback: segments after last match
+            if last_matched < segments.len() {
+                segments[last_matched..].join("-")
+            } else {
+                encoded.to_string()
+            }
+        })
 }
 
 /// Scan `~/.claude/` and return all projects with memory files.
@@ -214,7 +261,22 @@ mod tests {
     }
 
     #[test]
-    fn decode_project_name_takes_last_segment() {
-        assert_eq!(decode_project_name("-Users-test-myproject"), "myproject");
+    fn decode_nonexistent_path_returns_remainder() {
+        // When path doesn't exist on disk, returns segments after last match
+        let result = decode_project_name("-Users-test-myproject");
+        // "/Users" exists but "/Users/test" doesn't → remainder is "test-myproject"
+        assert_eq!(result, "test-myproject");
+    }
+
+    #[test]
+    fn decode_real_path_returns_basename() {
+        // When the full path exists, returns the last directory name
+        if let Some(home) = dirs::home_dir() {
+            let home_str = home.to_string_lossy().replace('/', "-");
+            let encoded = format!("{home_str}");
+            let result = decode_project_name(&encoded);
+            let expected = home.file_name().unwrap().to_string_lossy().to_string();
+            assert_eq!(result, expected);
+        }
     }
 }
