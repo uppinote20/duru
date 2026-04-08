@@ -34,64 +34,45 @@ pub struct Project {
 /// Strategy:
 /// 1. Replace `--` with `/_` to restore underscore-prefixed directories
 /// 2. Split by `-` and greedy-match against filesystem to resolve literal dashes
-fn decode_project_name(encoded: &str) -> String {
+///
+/// Returns `None` if the original project directory no longer exists on disk.
+fn decode_project_name(encoded: &str) -> Option<String> {
     // Step 1: `--` → `/_` (restores underscore-prefixed dirs like `_active`)
     let normalized = encoded.replace("--", "/_");
 
     // Step 2: Split by `-`, keeping segments that may contain `/` from step 1
     let segments: Vec<&str> = normalized.split('-').filter(|s| !s.is_empty()).collect();
     if segments.is_empty() {
-        return encoded.to_string();
+        return None;
     }
 
-    // Step 3: Greedy filesystem matching
+    // Step 3: Greedy filesystem matching — every segment must resolve
     let mut path = PathBuf::from("/");
     let mut i = 0;
-    let mut last_matched = 0; // track where filesystem matching stops
 
     while i < segments.len() {
         let remaining = segments.len() - i;
         let max_width = remaining.min(8);
         let mut matched = false;
 
-        // Try wider joins first (e.g., "crypto-trading-bot" before "crypto")
         for width in (1..=max_width).rev() {
             let candidate_name = segments[i..i + width].join("-");
             let candidate_path = path.join(&candidate_name);
             if candidate_path.is_dir() {
                 path = candidate_path;
                 i += width;
-                last_matched = i;
                 matched = true;
                 break;
             }
         }
 
         if !matched {
-            // No match — remaining segments form the project name
-            // Join them with `-` to preserve hyphenated directory names
-            let remainder = segments[i..].join("-");
-            return if remainder.is_empty() {
-                path.file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| encoded.to_string())
-            } else {
-                remainder
-            };
+            // Path doesn't fully resolve — project directory likely deleted/moved
+            return None;
         }
     }
 
-    // All segments matched on filesystem
-    path.file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| {
-            // Fallback: segments after last match
-            if last_matched < segments.len() {
-                segments[last_matched..].join("-")
-            } else {
-                encoded.to_string()
-            }
-        })
+    path.file_name().map(|n| n.to_string_lossy().to_string())
 }
 
 /// Scan `~/.claude/` and return all projects with memory files.
@@ -186,8 +167,9 @@ pub fn scan_claude_dir(claude_dir: &Path) -> Vec<Project> {
                 return None;
             }
 
+            let name = decode_project_name(&dir_name)?;
             Some(Project {
-                name: decode_project_name(&dir_name),
+                name,
                 path: project_path,
                 files,
             })
@@ -234,7 +216,16 @@ mod tests {
     fn scan_finds_project_files() {
         let (_tmp, claude_dir) = create_test_dir();
 
-        let project_dir = claude_dir.join("projects").join("-Users-test-myproject");
+        // Create a "project" dir inside the temp dir so greedy decode resolves it
+        let real_project = claude_dir.join("testproject");
+        fs::create_dir_all(&real_project).unwrap();
+
+        // Encode the project path as Claude Code would
+        let encoded = claude_dir
+            .join("testproject")
+            .to_string_lossy()
+            .replace('/', "-");
+        let project_dir = claude_dir.join("projects").join(&encoded);
         let memory_dir = project_dir.join("memory");
         fs::create_dir_all(&memory_dir).unwrap();
         fs::write(project_dir.join("CLAUDE.md"), "# Project").unwrap();
@@ -243,10 +234,24 @@ mod tests {
 
         let projects = scan_claude_dir(&claude_dir);
         assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].name, "testproject");
         assert_eq!(projects[0].files.len(), 3);
         assert_eq!(projects[0].files[0].name, "CLAUDE.md");
         assert_eq!(projects[0].files[1].name, "MEMORY.md");
         assert_eq!(projects[0].files[2].name, "notes.md");
+    }
+
+    #[test]
+    fn scan_excludes_deleted_projects() {
+        let (_tmp, claude_dir) = create_test_dir();
+
+        // Project entry exists in ~/.claude/projects/ but original dir is gone
+        let project_dir = claude_dir.join("projects").join("-Users-fake-deleted");
+        fs::create_dir_all(&project_dir).unwrap();
+        fs::write(project_dir.join("CLAUDE.md"), "# Stale").unwrap();
+
+        let projects = scan_claude_dir(&claude_dir);
+        assert!(projects.is_empty()); // excluded because /Users/fake/deleted doesn't exist
     }
 
     #[test]
@@ -261,22 +266,18 @@ mod tests {
     }
 
     #[test]
-    fn decode_nonexistent_path_returns_remainder() {
-        // When path doesn't exist on disk, returns segments after last match
+    fn decode_nonexistent_path_returns_none() {
         let result = decode_project_name("-Users-test-myproject");
-        // "/Users" exists but "/Users/test" doesn't → remainder is "test-myproject"
-        assert_eq!(result, "test-myproject");
+        assert_eq!(result, None);
     }
 
     #[test]
-    fn decode_real_path_returns_basename() {
-        // When the full path exists, returns the last directory name
+    fn decode_real_path_returns_some_basename() {
         if let Some(home) = dirs::home_dir() {
             let home_str = home.to_string_lossy().replace('/', "-");
-            let encoded = format!("{home_str}");
-            let result = decode_project_name(&encoded);
+            let result = decode_project_name(&home_str);
             let expected = home.file_name().unwrap().to_string_lossy().to_string();
-            assert_eq!(result, expected);
+            assert_eq!(result, Some(expected));
         }
     }
 }
