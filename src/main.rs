@@ -1,6 +1,7 @@
 mod app;
 mod scan;
 mod theme;
+mod ui;
 
 use clap::Parser;
 
