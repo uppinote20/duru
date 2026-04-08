@@ -40,7 +40,7 @@ impl App {
         self.projects.get(self.project_index)
     }
 
-    fn load_content(&mut self) {
+    pub fn load_content(&mut self) {
         self.content = match self.selected_project() {
             Some(project) => match project.files.get(self.file_index) {
                 Some(file) => {

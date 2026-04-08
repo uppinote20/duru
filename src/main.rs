@@ -14,7 +14,7 @@ use crossterm::{
 use ratatui::{Terminal, backend::CrosstermBackend};
 
 use app::App;
-use scan::scan_claude_dir;
+use scan::{demo_projects, scan_claude_dir};
 use theme::Theme;
 
 #[derive(Parser)]
@@ -27,30 +27,39 @@ struct Cli {
     /// Custom ~/.claude/ path
     #[arg(long)]
     path: Option<PathBuf>,
+
+    /// Use demo data (for screenshots and testing)
+    #[arg(long)]
+    demo: bool,
 }
 
 fn main() -> io::Result<()> {
     let cli = Cli::parse();
 
-    let claude_dir = cli.path.unwrap_or_else(|| {
-        dirs::home_dir()
-            .expect("cannot resolve home directory")
-            .join(".claude")
-    });
+    let projects = if cli.demo {
+        demo_projects()
+    } else {
+        let claude_dir = cli.path.unwrap_or_else(|| {
+            dirs::home_dir()
+                .expect("cannot resolve home directory")
+                .join(".claude")
+        });
 
-    if !claude_dir.is_dir() {
-        eprintln!("error: {} does not exist", claude_dir.display());
-        std::process::exit(1);
-    }
+        if !claude_dir.is_dir() {
+            eprintln!("error: {} does not exist", claude_dir.display());
+            std::process::exit(1);
+        }
 
-    let projects = scan_claude_dir(&claude_dir);
-    if projects.is_empty() {
-        eprintln!(
-            "no CLAUDE.md or memory files found in {}",
-            claude_dir.display()
-        );
-        std::process::exit(0);
-    }
+        let projects = scan_claude_dir(&claude_dir);
+        if projects.is_empty() {
+            eprintln!(
+                "no CLAUDE.md or memory files found in {}",
+                claude_dir.display()
+            );
+            std::process::exit(0);
+        }
+        projects
+    };
 
     let theme = Theme::from_option(cli.theme.as_deref());
 

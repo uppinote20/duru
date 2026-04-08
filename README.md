@@ -6,6 +6,10 @@ Terminal dashboard for Claude Code — explore, manage, and monitor your setup.
 
 duru scans `~/.claude/` and displays all your CLAUDE.md files and auto-memory across every project in a Miller Columns TUI.
 
+<p align="center">
+  <img src="assets/screenshot.svg" alt="duru screenshot" width="800">
+</p>
+
 ## Install
 
 ```bash

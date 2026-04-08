@@ -199,6 +199,108 @@ pub fn scan_claude_dir(claude_dir: &Path) -> Vec<Project> {
     projects
 }
 
+/// Demo data for screenshots and testing
+pub fn demo_projects() -> Vec<Project> {
+    let demo_file = |kind: FileKind, name: &str, size: u64| MemoryFile {
+        kind,
+        path: PathBuf::from(format!("/tmp/duru-demo/{name}")),
+        name: name.to_string(),
+        size,
+    };
+
+    // Write demo content files to /tmp so preview works
+    let demo_dir = Path::new("/tmp/duru-demo");
+    let _ = fs::create_dir_all(demo_dir);
+
+    let files_data = [
+        (
+            "CLAUDE-global.md",
+            "# Claude Code Workflow Rules\n\nCore principles: see `~/.claude/SOUL.md`.\n\n## 0. Language Rules\n\n- **GitHub-facing text in English**: release notes,\n  PR descriptions, commit message titles\n- **Commit message body**: local language allowed\n- **Conversation**: match user's language\n\n## 1. Git Workflow\n\n### Commit\nAlways use `/group-commit` skill for commits.\n\n### Branch Targeting\nCheck current branch before commit:\n- `main`/`master`: only version bumps / CI files\n- `feature/*`: proceed as normal\n\n### PR Title (Conventional Commits)\nFormat: `type: subject`\nAllowed: feat | fix | docs | style | refactor | perf | test | chore",
+        ),
+        (
+            "CLAUDE-project.md",
+            "# my-webapp\n\nA Next.js web application with TypeScript.\n\n## Tech Stack\n- Next.js 15 (App Router)\n- TypeScript 5.7\n- Tailwind CSS 4\n- Prisma ORM\n\n## Build & Test\n```bash\npnpm dev      # development server\npnpm build    # production build\npnpm test     # run tests\npnpm lint     # eslint check\n```\n\n## Key Conventions\n1. Server components by default\n2. Client components only when needed\n3. API routes in `app/api/`",
+        ),
+        (
+            "MEMORY.md",
+            "# my-webapp — Memory Index\n\n- [User Profile](user_profile.md) — Senior full-stack developer, prefers concise responses\n- [API Patterns](api_patterns.md) — REST conventions, error handling, auth middleware\n- [Deployment Notes](deployment.md) — Vercel config, env vars, preview branches",
+        ),
+        (
+            "user_profile.md",
+            "---\nname: User Profile\ndescription: Developer role and preferences\ntype: user\n---\n\nSenior full-stack developer with 8 years experience.\nPrefers TypeScript, concise code reviews, no trailing summaries.\n\n**Stack expertise**: React, Node.js, PostgreSQL, Redis\n**Current focus**: Performance optimization and API design",
+        ),
+        (
+            "api_patterns.md",
+            "---\nname: API Patterns\ndescription: REST API conventions for this project\ntype: feedback\n---\n\nAll API routes follow this pattern:\n- Validate input with Zod schemas\n- Return consistent error format: `{ error: string, code: number }`\n- Use middleware for auth checks\n\n**Why:** Inconsistent error responses caused frontend bugs in Q1.\n**How to apply:** Every new API route must use `validateRequest()` wrapper.",
+        ),
+        (
+            "deployment.md",
+            "---\nname: Deployment Notes\ndescription: Vercel deployment configuration and gotchas\ntype: reference\n---\n\nDeployed on Vercel with automatic preview branches.\n\n- Production: `main` branch\n- Preview: all PR branches\n- Environment variables in Vercel dashboard\n- Edge functions for middleware (auth, i18n)\n\nKnown issue: Cold starts on first request after deploy (~2s).",
+        ),
+        (
+            "CLAUDE-rust.md",
+            "# rust-analyzer\n\nA Rust-based code analysis tool.\n\n## Build & Test\n```bash\ncargo build\ncargo test\ncargo clippy -- -D warnings\n```\n\n## Conventions\n- No `unsafe` code\n- All public APIs documented\n- Error types use `thiserror`",
+        ),
+        (
+            "MEMORY-rust.md",
+            "# rust-analyzer — Memory Index\n\n- [Build Quirks](build_quirks.md) — Cross-compilation flags, CI caching strategy",
+        ),
+        (
+            "build_quirks.md",
+            "---\nname: Build Quirks\ndescription: CI/CD build configuration notes\ntype: project\n---\n\nCross-compile requires `cross` tool for Linux musl targets.\nCI caching key should include Cargo.lock hash.\n\n**Why:** Build times went from 12min to 3min after proper caching.\n**How to apply:** Always update cache key when adding dependencies.",
+        ),
+        (
+            "CLAUDE-design.md",
+            "# design-system\n\nShared component library for all frontend projects.\n\n## Stack\n- React 19\n- Storybook 8\n- CSS Modules\n\n## Usage\n```bash\npnpm storybook    # component playground\npnpm build:lib    # build for distribution\n```",
+        ),
+    ];
+
+    for (name, content) in &files_data {
+        let _ = fs::write(demo_dir.join(name), content);
+    }
+
+    vec![
+        Project {
+            name: "GLOBAL".to_string(),
+            path: PathBuf::from("/tmp/duru-demo"),
+            files: vec![demo_file(
+                FileKind::GlobalClaudeMd,
+                "CLAUDE-global.md",
+                2480,
+            )],
+        },
+        Project {
+            name: "design-system".to_string(),
+            path: PathBuf::from("/tmp/duru-demo"),
+            files: vec![demo_file(
+                FileKind::ProjectClaudeMd,
+                "CLAUDE-design.md",
+                890,
+            )],
+        },
+        Project {
+            name: "my-webapp".to_string(),
+            path: PathBuf::from("/tmp/duru-demo"),
+            files: vec![
+                demo_file(FileKind::ProjectClaudeMd, "CLAUDE-project.md", 1240),
+                demo_file(FileKind::MemoryIndex, "MEMORY.md", 320),
+                demo_file(FileKind::Memory, "api_patterns.md", 580),
+                demo_file(FileKind::Memory, "deployment.md", 640),
+                demo_file(FileKind::Memory, "user_profile.md", 420),
+            ],
+        },
+        Project {
+            name: "rust-analyzer".to_string(),
+            path: PathBuf::from("/tmp/duru-demo"),
+            files: vec![
+                demo_file(FileKind::ProjectClaudeMd, "CLAUDE-rust.md", 760),
+                demo_file(FileKind::MemoryIndex, "MEMORY-rust.md", 180),
+                demo_file(FileKind::Memory, "build_quirks.md", 350),
+            ],
+        },
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
