@@ -8,7 +8,9 @@ GIF_FILE="demo.gif"
 
 cargo build --release 2>/dev/null
 
-# Automated recording via expect
+# DURU_NO_ALT_SCREEN lets asciinema capture the TUI output
+export DURU_NO_ALT_SCREEN=1
+
 asciinema rec "$CAST_FILE" --cols 120 --rows 30 --overwrite --command "
 expect -c '
     spawn ./target/release/duru --demo

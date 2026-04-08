@@ -63,17 +63,24 @@ fn main() -> io::Result<()> {
 
     let theme = Theme::from_option(cli.theme.as_deref());
 
+    let use_alt_screen = std::env::var("DURU_NO_ALT_SCREEN").is_err();
+
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    if use_alt_screen {
+        execute!(stdout, EnterAlternateScreen)?;
+    }
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
+    terminal.clear()?;
 
     let mut app = App::new(projects);
     let result = run_app(&mut terminal, &mut app, &theme);
 
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    if use_alt_screen {
+        execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    }
 
     result
 }
