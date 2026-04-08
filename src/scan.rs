@@ -180,10 +180,12 @@ pub fn scan_claude_dir(claude_dir: &Path) -> Vec<Project> {
     project_entries.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
 
     // Deduplicate: Claude Code has two encoding schemes (old: `_active`, new: `--active`)
-    // Keep the entry with more files; if equal, keep whichever comes first
+    // Keep the more recently modified entry
     project_entries.dedup_by(|b, a| {
         if a.name == b.name {
-            if b.files.len() > a.files.len() {
+            let a_mod = fs::metadata(&a.path).and_then(|m| m.modified()).ok();
+            let b_mod = fs::metadata(&b.path).and_then(|m| m.modified()).ok();
+            if b_mod > a_mod {
                 *a = std::mem::take(b);
             }
             true
