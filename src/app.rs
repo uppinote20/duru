@@ -100,11 +100,11 @@ impl App {
                 }
             }
             Pane::Files => {
-                if let Some(project) = self.selected_project() {
-                    if self.file_index + 1 < project.files.len() {
-                        self.file_index += 1;
-                        self.load_content();
-                    }
+                if let Some(project) = self.selected_project()
+                    && self.file_index + 1 < project.files.len()
+                {
+                    self.file_index += 1;
+                    self.load_content();
                 }
             }
             Pane::Preview => {

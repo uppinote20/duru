@@ -7,6 +7,7 @@ pub enum ThemeMode {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct Theme {
     pub mode: ThemeMode,
     pub base: Color,
@@ -68,14 +69,12 @@ impl Theme {
     fn detect() -> Self {
         // Check COLORFGBG env var: "foreground;background"
         // Background >= 8 usually means light theme
-        if let Ok(val) = std::env::var("COLORFGBG") {
-            if let Some(bg) = val.rsplit(';').next() {
-                if let Ok(bg_num) = bg.parse::<u8>() {
-                    if bg_num >= 8 {
-                        return Self::light();
-                    }
-                }
-            }
+        if let Ok(val) = std::env::var("COLORFGBG")
+            && let Some(bg) = val.rsplit(';').next()
+            && let Ok(bg_num) = bg.parse::<u8>()
+            && bg_num >= 8
+        {
+            return Self::light();
         }
         Self::dark()
     }

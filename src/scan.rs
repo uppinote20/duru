@@ -18,6 +18,7 @@ pub struct MemoryFile {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct Project {
     pub name: String,
     pub path: PathBuf,
@@ -32,10 +33,10 @@ fn decode_project_name(encoded: &str) -> String {
     let decoded_path = encoded.replacen('-', "/", 1);
     let path = Path::new(&decoded_path);
 
-    if path.exists() {
-        if let Some(name) = path.file_name() {
-            return name.to_string_lossy().to_string();
-        }
+    if path.exists()
+        && let Some(name) = path.file_name()
+    {
+        return name.to_string_lossy().to_string();
     }
 
     // Fallback: take the last non-empty segment after splitting by `-`
@@ -99,8 +100,9 @@ pub fn scan_claude_dir(claude_dir: &Path) -> Vec<Project> {
 
             // Check for memory/*.md files
             let memory_dir = project_path.join("memory");
-            if memory_dir.is_dir() {
-                if let Ok(entries) = fs::read_dir(&memory_dir) {
+            if memory_dir.is_dir()
+                && let Ok(entries) = fs::read_dir(&memory_dir)
+            {
                     let mut memory_files: Vec<MemoryFile> = entries
                         .filter_map(|e| e.ok())
                         .filter(|e| {
@@ -127,7 +129,6 @@ pub fn scan_claude_dir(claude_dir: &Path) -> Vec<Project> {
                     });
 
                     files.extend(memory_files);
-                }
             }
 
             // Skip projects with no files
