@@ -1,8 +1,12 @@
+<p align="center">
+  <img src="assets/mascot.png" alt="duru mascot">
+</p>
+
 # duru (두루)
 
 Terminal dashboard for Claude Code — explore, manage, and monitor your setup.
 
-> **두루** (Korean): thoroughly, comprehensively, all around
+> **두루** (Korean): thoroughly, comprehensively, all around — named after 두루미, the Korean crane
 
 duru scans `~/.claude/` and displays all your CLAUDE.md files and auto-memory across every project in a Miller Columns TUI.
 
