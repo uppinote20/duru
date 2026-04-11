@@ -58,10 +58,12 @@ fn split_frontmatter(input: &str) -> (Option<&str>, &str) {
         let is_line_end = tail.is_empty() || tail.starts_with('\n') || tail.starts_with("\r\n");
         if is_line_end {
             let fm_body = &after_open[..fence_start - 1]; // drop the preceding `\n`
-            let body_start = if let Some(stripped) = tail.strip_prefix("\r\n") {
-                after_fence + (tail.len() - stripped.len())
-            } else if let Some(stripped) = tail.strip_prefix('\n') {
-                after_fence + (tail.len() - stripped.len())
+            // Step past the newline that ends the closing fence. CRLF is 2 bytes,
+            // LF is 1 byte, and an EOF-terminated fence contributes nothing.
+            let body_start = if tail.starts_with("\r\n") {
+                after_fence + 2
+            } else if tail.starts_with('\n') {
+                after_fence + 1
             } else {
                 after_fence
             };
@@ -292,12 +294,17 @@ impl<'a> Renderer<'a> {
             Event::Html(text) | Event::InlineHtml(text) => {
                 // CommonMark allows raw HTML. Terminals can't render it, so emit
                 // the raw markup as muted text so it's visible but de-emphasized.
+                // `start_line_if_needed` must be called before the first span so
+                // that blockquote `▎ ` and list bullet prefixes are emitted for
+                // raw HTML just like any other text.
+                self.start_line_if_needed();
                 let content = text.as_ref();
                 let style = Style::default().fg(self.theme.muted);
                 let mut first = true;
                 for segment in content.split('\n') {
                     if !first {
                         self.flush_line();
+                        self.start_line_if_needed();
                     }
                     if !segment.is_empty() {
                         self.current.push(Span::styled(segment.to_string(), style));
@@ -973,6 +980,40 @@ mod tests {
             .collect::<Vec<_>>()
             .join("|");
         assert!(joined.contains("<br>"));
+    }
+
+    #[test]
+    fn raw_html_inside_blockquote_gets_bar_prefix() {
+        let theme = Theme::dark();
+        let text = render_markdown("> <span>quoted html</span>", &theme, 80);
+        let line = text
+            .lines
+            .iter()
+            .find(|l| line_text(l).contains("<span>"))
+            .expect("html line missing");
+        let content = line_text(line);
+        assert!(
+            content.starts_with("▎ "),
+            "expected blockquote bar prefix, got {content:?}"
+        );
+        assert!(content.contains("<span>quoted html</span>"));
+    }
+
+    #[test]
+    fn raw_html_inside_list_item_gets_bullet_prefix() {
+        let theme = Theme::dark();
+        let text = render_markdown("- <span>inside list</span>", &theme, 80);
+        let line = text
+            .lines
+            .iter()
+            .find(|l| line_text(l).contains("<span>"))
+            .expect("html line missing");
+        let content = line_text(line);
+        assert!(
+            content.contains("• "),
+            "expected bullet prefix, got {content:?}"
+        );
+        assert!(content.contains("<span>inside list</span>"));
     }
 
     #[test]
