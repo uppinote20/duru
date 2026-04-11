@@ -16,9 +16,34 @@ duru scans `~/.claude/` and displays all your CLAUDE.md files and auto-memory ac
 
 ## Install
 
+### Homebrew (macOS / Linux)
+
+```bash
+brew install uppinote20/tap/duru
+```
+
+### Scoop (Windows)
+
+```powershell
+scoop bucket add uppinote20 https://github.com/uppinote20/scoop-bucket
+scoop install duru
+```
+
+### Install script (macOS / Linux)
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/uppinote20/duru/main/install.sh | bash
+```
+
+### From source
+
 ```bash
 cargo install --path .
 ```
+
+### Prebuilt binaries
+
+Download from [Releases](https://github.com/uppinote20/duru/releases) for macOS (ARM/x86_64), Linux (GNU/musl), and Windows (x86_64/ARM64).
 
 ## Usage
 

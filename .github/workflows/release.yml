@@ -1,32 +1,233 @@
-name: Publish Release
+name: Release
 
 on:
   push:
-    tags:
-      - "v*"
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  BINARY_NAME: duru
 
 jobs:
-  publish:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
+  build:
+    strategy:
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            archive: tar.gz
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            archive: tar.gz
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            archive: tar.gz
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            archive: tar.gz
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            archive: zip
+          - target: aarch64-pc-windows-msvc
+            os: windows-latest
+            archive: zip
+
+    runs-on: ${{ matrix.os }}
 
     steps:
-      - name: Publish draft release
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install musl-tools (Linux musl)
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-${{ matrix.target }}-release-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package (Unix)
+        if: matrix.archive == 'tar.gz'
+        run: |
+          cd target/${{ matrix.target }}/release
+          tar czf ../../../${{ env.BINARY_NAME }}-${{ matrix.target }}.tar.gz ${{ env.BINARY_NAME }}
+          cd ../../..
+          shasum -a 256 ${{ env.BINARY_NAME }}-${{ matrix.target }}.tar.gz > ${{ env.BINARY_NAME }}-${{ matrix.target }}.tar.gz.sha256
+
+      - name: Package (Windows)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "target/${{ matrix.target }}/release/${{ env.BINARY_NAME }}.exe" -DestinationPath "${{ env.BINARY_NAME }}-${{ matrix.target }}.zip"
+          $hash = (Get-FileHash "${{ env.BINARY_NAME }}-${{ matrix.target }}.zip" -Algorithm SHA256).Hash.ToLower()
+          "$hash  ${{ env.BINARY_NAME }}-${{ matrix.target }}.zip" | Out-File -Encoding ascii "${{ env.BINARY_NAME }}-${{ matrix.target }}.zip.sha256"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.BINARY_NAME }}-${{ matrix.target }}
+          path: |
+            ${{ env.BINARY_NAME }}-${{ matrix.target }}.${{ matrix.archive }}
+            ${{ env.BINARY_NAME }}-${{ matrix.target }}.${{ matrix.archive }}.sha256
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Publish release with artifacts
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: |
-          # Find existing draft release created by release-drafter
+          # Check for existing draft release (created by release-drafter)
           draft_tag=$(gh release list --json tagName,isDraft -q '.[] | select(.isDraft) | .tagName' | head -1)
 
           if [ -n "$draft_tag" ]; then
-            # Update draft: set correct tag, title, and publish
+            # Upload assets to existing draft, update tag/title, and publish
+            gh release upload "$draft_tag" artifacts/* --clobber
             gh release edit "$draft_tag" --tag "$TAG" --title "$TAG" --draft=false
-            echo "Published draft release as $TAG"
           else
-            # No draft exists — create and publish a minimal release
-            gh release create "$TAG" --title "$TAG" --generate-notes
-            echo "Created new release $TAG (no draft found)"
+            # No draft exists — create and publish directly
+            gh release create "$TAG" artifacts/* --title "$TAG" --generate-notes
+          fi
+
+  update-homebrew:
+    needs: release
+    runs-on: ubuntu-latest
+    if: "!contains(github.ref_name, '-')"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Extract version
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Extract SHA256 checksums
+        id: sha256
+        run: |
+          for target in aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-gnu x86_64-unknown-linux-musl; do
+            sha=$(cut -d ' ' -f 1 "artifacts/${BINARY_NAME}-${target}.tar.gz.sha256")
+            key=$(echo "$target" | tr '-' '_')
+            echo "${key}=${sha}" >> "$GITHUB_OUTPUT"
+          done
+
+      - name: Generate formula
+        run: |
+          sed \
+            -e "s/{{VERSION}}/${{ steps.version.outputs.version }}/g" \
+            -e "s/{{SHA256_AARCH64_APPLE_DARWIN}}/${{ steps.sha256.outputs.aarch64_apple_darwin }}/g" \
+            -e "s/{{SHA256_X86_64_APPLE_DARWIN}}/${{ steps.sha256.outputs.x86_64_apple_darwin }}/g" \
+            -e "s/{{SHA256_X86_64_UNKNOWN_LINUX_GNU}}/${{ steps.sha256.outputs.x86_64_unknown_linux_gnu }}/g" \
+            -e "s/{{SHA256_X86_64_UNKNOWN_LINUX_MUSL}}/${{ steps.sha256.outputs.x86_64_unknown_linux_musl }}/g" \
+            dist/homebrew/duru.rb > duru.rb
+
+      - name: Update Homebrew tap
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          CONTENT=$(base64 -w 0 duru.rb)
+          EXISTING_SHA=$(gh api repos/uppinote20/homebrew-tap/contents/Formula/duru.rb --jq '.sha' 2>/dev/null || true)
+
+          if [ -n "$EXISTING_SHA" ]; then
+            gh api repos/uppinote20/homebrew-tap/contents/Formula/duru.rb \
+              --method PUT \
+              -f "message=duru ${VERSION}" \
+              -f "content=${CONTENT}" \
+              -f "sha=${EXISTING_SHA}"
+          else
+            gh api repos/uppinote20/homebrew-tap/contents/Formula/duru.rb \
+              --method PUT \
+              -f "message=duru ${VERSION}" \
+              -f "content=${CONTENT}"
+          fi
+
+  update-scoop:
+    needs: release
+    runs-on: ubuntu-latest
+    if: "!contains(github.ref_name, '-')"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Extract version
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Extract SHA256 checksums
+        id: sha256
+        run: |
+          for target in x86_64-pc-windows-msvc aarch64-pc-windows-msvc; do
+            sha=$(cut -d ' ' -f 1 "artifacts/${BINARY_NAME}-${target}.zip.sha256")
+            key=$(echo "$target" | tr '-' '_')
+            echo "${key}=${sha}" >> "$GITHUB_OUTPUT"
+          done
+
+      - name: Generate manifest
+        run: |
+          sed \
+            -e "s/{{VERSION}}/${{ steps.version.outputs.version }}/g" \
+            -e "s/{{SHA256_X86_64_PC_WINDOWS_MSVC}}/${{ steps.sha256.outputs.x86_64_pc_windows_msvc }}/g" \
+            -e "s/{{SHA256_AARCH64_PC_WINDOWS_MSVC}}/${{ steps.sha256.outputs.aarch64_pc_windows_msvc }}/g" \
+            dist/scoop/duru.json > duru.json
+
+      - name: Update Scoop bucket
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          CONTENT=$(base64 -w 0 duru.json)
+          EXISTING_SHA=$(gh api repos/uppinote20/scoop-bucket/contents/duru.json --jq '.sha' 2>/dev/null || true)
+
+          if [ -n "$EXISTING_SHA" ]; then
+            gh api repos/uppinote20/scoop-bucket/contents/duru.json \
+              --method PUT \
+              -f "message=duru ${VERSION}" \
+              -f "content=${CONTENT}" \
+              -f "sha=${EXISTING_SHA}"
+          else
+            gh api repos/uppinote20/scoop-bucket/contents/duru.json \
+              --method PUT \
+              -f "message=duru ${VERSION}" \
+              -f "content=${CONTENT}"
           fi
