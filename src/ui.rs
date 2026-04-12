@@ -7,6 +7,7 @@ use ratatui::{
 };
 
 use crate::app::{App, Pane};
+use crate::markdown;
 use crate::theme::Theme;
 
 pub fn render(frame: &mut Frame, app: &App, theme: &Theme) {
@@ -125,7 +126,10 @@ fn render_preview_pane(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) 
         .unwrap_or("");
     let block = pane_block(file_name, focused, theme);
 
-    let paragraph = Paragraph::new(app.content.as_str())
+    // Pane width minus the Block's left/right border (1 cell each).
+    let content_width = area.width.saturating_sub(2);
+    let rendered = markdown::render_markdown(&app.content, theme, content_width);
+    let paragraph = Paragraph::new(rendered)
         .block(block)
         .style(Style::default().fg(theme.text).bg(theme.base))
         .wrap(Wrap { trim: false })

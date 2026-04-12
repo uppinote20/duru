@@ -9,6 +9,8 @@ use ratatui::{Terminal, backend::TestBackend, style::Color};
 
 #[path = "../src/app.rs"]
 mod app;
+#[path = "../src/markdown.rs"]
+mod markdown;
 #[path = "../src/scan.rs"]
 mod scan;
 #[path = "../src/theme.rs"]

@@ -1,4 +1,5 @@
 mod app;
+mod markdown;
 mod scan;
 mod theme;
 mod ui;
