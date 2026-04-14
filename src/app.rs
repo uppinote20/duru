@@ -124,7 +124,16 @@ impl App {
                 }
             }
             Pane::Preview => {
-                self.scroll_offset = self.scroll_offset.saturating_add(1);
+                // Use logical line count as the bound. Paragraph wraps long
+                // lines into more visual rows than lines().count() reports,
+                // so subtracting a viewport height would prevent reaching
+                // the end of wrapped content. Allowing scroll up to
+                // total - 1 ensures the last line is always reachable;
+                // over-scrolling just shows empty space (like `less`).
+                let total = self.content.lines().count() as u16;
+                if self.scroll_offset < total {
+                    self.scroll_offset = self.scroll_offset.saturating_add(1);
+                }
             }
         }
     }
