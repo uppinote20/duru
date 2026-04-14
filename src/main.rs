@@ -118,9 +118,13 @@ fn run_app(
                     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
                 }
 
-                // Spawn $EDITOR.
+                // Spawn $EDITOR. Split on whitespace so values like
+                // "emacsclient -t" or "nano -l" work correctly.
                 let editor = resolve_editor();
-                let _ = Command::new(&editor).arg(&path).status();
+                let mut parts = editor.split_whitespace();
+                if let Some(cmd) = parts.next() {
+                    let _ = Command::new(cmd).args(parts).arg(&path).status();
+                }
 
                 // Resume the terminal.
                 if use_alt_screen {
