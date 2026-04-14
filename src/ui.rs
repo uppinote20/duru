@@ -144,6 +144,8 @@ fn render_help_bar(frame: &mut Frame, theme: &Theme, area: Rect) {
         Span::styled(" navigate  ", Style::default().fg(theme.muted)),
         Span::styled("←→", Style::default().fg(theme.text)),
         Span::styled(" pane  ", Style::default().fg(theme.muted)),
+        Span::styled("e", Style::default().fg(theme.text)),
+        Span::styled(" edit  ", Style::default().fg(theme.muted)),
         Span::styled("q", Style::default().fg(theme.text)),
         Span::styled(" quit", Style::default().fg(theme.muted)),
     ]);

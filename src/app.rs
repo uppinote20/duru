@@ -1,4 +1,5 @@
 use std::fs;
+use std::path::Path;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -19,6 +20,7 @@ pub struct App {
     pub scroll_offset: u16,
     pub content: String,
     pub should_quit: bool,
+    pub wants_edit: bool,
 }
 
 impl App {
@@ -31,6 +33,7 @@ impl App {
             scroll_offset: 0,
             content: String::new(),
             should_quit: false,
+            wants_edit: false,
         };
         app.load_content();
         app
@@ -38,6 +41,12 @@ impl App {
 
     pub fn selected_project(&self) -> Option<&Project> {
         self.projects.get(self.project_index)
+    }
+
+    pub fn selected_file_path(&self) -> Option<&Path> {
+        self.selected_project()
+            .and_then(|p| p.files.get(self.file_index))
+            .map(|f| f.path.as_path())
     }
 
     pub fn load_content(&mut self) {
@@ -65,6 +74,13 @@ impl App {
             KeyCode::Down | KeyCode::Char('j') => self.move_down(),
             KeyCode::Left | KeyCode::Char('h') => self.move_left(),
             KeyCode::Right | KeyCode::Char('l') | KeyCode::Enter => self.move_right(),
+            KeyCode::Char('e') => {
+                if matches!(self.focus, Pane::Files | Pane::Preview)
+                    && self.selected_file_path().is_some()
+                {
+                    self.wants_edit = true;
+                }
+            }
             _ => {}
         }
     }
@@ -108,7 +124,16 @@ impl App {
                 }
             }
             Pane::Preview => {
-                self.scroll_offset = self.scroll_offset.saturating_add(1);
+                // Use logical line count as the bound. Paragraph wraps long
+                // lines into more visual rows than lines().count() reports,
+                // so subtracting a viewport height would prevent reaching
+                // the end of wrapped content. Allowing scroll up to
+                // total - 1 ensures the last line is always reachable;
+                // over-scrolling just shows empty space (like `less`).
+                let total = self.content.lines().count() as u16;
+                if self.scroll_offset < total {
+                    self.scroll_offset = self.scroll_offset.saturating_add(1);
+                }
             }
         }
     }
@@ -221,5 +246,60 @@ mod tests {
         let mut app = App::new(make_test_projects());
         app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
         assert!(app.should_quit);
+    }
+
+    #[test]
+    fn e_key_sets_wants_edit_in_files_pane() {
+        let mut app = App::new(make_test_projects());
+        app.focus = Pane::Files;
+        app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+        assert!(app.wants_edit);
+    }
+
+    #[test]
+    fn e_key_sets_wants_edit_in_preview_pane() {
+        let mut app = App::new(make_test_projects());
+        app.focus = Pane::Preview;
+        app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+        assert!(app.wants_edit);
+    }
+
+    #[test]
+    fn e_key_ignored_in_projects_pane() {
+        let mut app = App::new(make_test_projects());
+        app.focus = Pane::Projects;
+        app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+        assert!(!app.wants_edit);
+    }
+
+    #[test]
+    fn e_key_ignored_when_no_files() {
+        let mut app = App::new(vec![Project {
+            name: "empty".to_string(),
+            path: PathBuf::from("/tmp/empty"),
+            files: vec![],
+        }]);
+        app.focus = Pane::Files;
+        app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+        assert!(!app.wants_edit);
+    }
+
+    #[test]
+    fn selected_file_path_returns_path_when_file_selected() {
+        let app = App::new(make_test_projects());
+        assert_eq!(
+            app.selected_file_path(),
+            Some(std::path::Path::new("/tmp/test/CLAUDE.md"))
+        );
+    }
+
+    #[test]
+    fn selected_file_path_returns_none_for_empty_project() {
+        let app = App::new(vec![Project {
+            name: "empty".to_string(),
+            path: PathBuf::from("/tmp/empty"),
+            files: vec![],
+        }]);
+        assert_eq!(app.selected_file_path(), None);
     }
 }
