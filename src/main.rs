@@ -6,6 +6,7 @@ mod ui;
 
 use std::io;
 use std::path::PathBuf;
+use std::process::Command;
 
 use clap::Parser;
 use crossterm::{
@@ -32,6 +33,12 @@ struct Cli {
     /// Use demo data (for screenshots and testing)
     #[arg(long)]
     demo: bool,
+}
+
+fn resolve_editor() -> String {
+    std::env::var("VISUAL")
+        .or_else(|_| std::env::var("EDITOR"))
+        .unwrap_or_else(|_| "vi".to_string())
 }
 
 fn main() -> io::Result<()> {
@@ -76,7 +83,7 @@ fn main() -> io::Result<()> {
     terminal.clear()?;
 
     let mut app = App::new(projects);
-    let result = run_app(&mut terminal, &mut app, &theme);
+    let result = run_app(&mut terminal, &mut app, &theme, use_alt_screen);
 
     disable_raw_mode()?;
     if use_alt_screen {
@@ -90,6 +97,7 @@ fn run_app(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut App,
     theme: &Theme,
+    use_alt_screen: bool,
 ) -> io::Result<()> {
     loop {
         terminal.draw(|frame| ui::render(frame, app, theme))?;
@@ -98,6 +106,43 @@ fn run_app(
             && let crossterm::event::Event::Key(key) = crossterm::event::read()?
         {
             app.handle_key(key);
+        }
+
+        if app.wants_edit {
+            app.wants_edit = false;
+
+            if let Some(path) = app.selected_file_path().map(|p| p.to_path_buf()) {
+                // Suspend the terminal.
+                disable_raw_mode()?;
+                if use_alt_screen {
+                    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+                }
+
+                // Spawn $EDITOR.
+                let editor = resolve_editor();
+                let _ = Command::new(&editor).arg(&path).status();
+
+                // Resume the terminal.
+                if use_alt_screen {
+                    execute!(terminal.backend_mut(), EnterAlternateScreen)?;
+                }
+                enable_raw_mode()?;
+                terminal.clear()?;
+
+                // Refresh file size.
+                if let Some(project) = app.projects.get_mut(app.project_index)
+                    && let Some(file) = project.files.get_mut(app.file_index)
+                    && let Ok(meta) = std::fs::metadata(&file.path)
+                {
+                    file.size = meta.len();
+                }
+
+                // Reload content, preserving scroll position.
+                let saved_scroll = app.scroll_offset;
+                app.load_content();
+                let max_scroll = app.content.lines().count().saturating_sub(1) as u16;
+                app.scroll_offset = saved_scroll.min(max_scroll);
+            }
         }
 
         if app.should_quit {
