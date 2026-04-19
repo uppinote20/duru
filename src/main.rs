@@ -1,6 +1,7 @@
 mod app;
 mod markdown;
 mod scan;
+mod sessions;
 mod theme;
 mod ui;
 
