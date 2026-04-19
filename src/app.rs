@@ -142,11 +142,13 @@ impl App {
             KeyCode::Char('g') => {
                 if self.sessions_focus == SessionsPane::Table {
                     self.session_index = 0;
+                    self.session_scroll = 0;
                 }
             }
             KeyCode::Char('G') => {
                 if self.sessions_focus == SessionsPane::Table && !self.sessions.is_empty() {
                     self.session_index = self.sessions.len() - 1;
+                    self.session_scroll = 0;
                 }
             }
             KeyCode::Char('s') => self.cycle_sort(),
@@ -210,6 +212,7 @@ impl App {
             SessionsPane::Table => {
                 if self.session_index > 0 {
                     self.session_index -= 1;
+                    self.session_scroll = 0;
                 }
             }
             SessionsPane::Detail => {
@@ -223,10 +226,13 @@ impl App {
             SessionsPane::Table => {
                 if self.session_index + 1 < self.sessions.len() {
                     self.session_index += 1;
+                    self.session_scroll = 0;
                 }
             }
             SessionsPane::Detail => {
-                self.session_scroll = self.session_scroll.saturating_add(1);
+                // Detail holds 6 content lines in a 6-row viewport; scrolling
+                // beyond 5 shows only blank space. Clamp to avoid that.
+                self.session_scroll = (self.session_scroll.saturating_add(1)).min(5);
             }
         }
     }
@@ -463,6 +469,55 @@ mod tests {
         app.sessions_focus = SessionsPane::Detail;
         app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
         assert_eq!(app.session_scroll, 1);
+    }
+
+    #[test]
+    fn sessions_mode_detail_j_clamps_at_five() {
+        let mut app = app_in_sessions_mode();
+        app.sessions_focus = SessionsPane::Detail;
+        for _ in 0..20 {
+            app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+        }
+        assert_eq!(app.session_scroll, 5);
+    }
+
+    #[test]
+    fn sessions_mode_j_resets_detail_scroll() {
+        let mut app = app_in_sessions_mode();
+        app.session_scroll = 3;
+        app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+        assert_eq!(app.session_index, 1);
+        assert_eq!(app.session_scroll, 0);
+    }
+
+    #[test]
+    fn sessions_mode_k_resets_detail_scroll() {
+        let mut app = app_in_sessions_mode();
+        app.session_index = 2;
+        app.session_scroll = 3;
+        app.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE));
+        assert_eq!(app.session_index, 1);
+        assert_eq!(app.session_scroll, 0);
+    }
+
+    #[test]
+    fn sessions_mode_g_resets_detail_scroll() {
+        let mut app = app_in_sessions_mode();
+        app.session_index = 3;
+        app.session_scroll = 3;
+        app.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE));
+        assert_eq!(app.session_index, 0);
+        assert_eq!(app.session_scroll, 0);
+    }
+
+    #[test]
+    fn sessions_mode_shift_g_resets_detail_scroll() {
+        let mut app = app_in_sessions_mode();
+        app.session_index = 0;
+        app.session_scroll = 3;
+        app.handle_key(KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT));
+        assert_eq!(app.session_index, app.sessions.len() - 1);
+        assert_eq!(app.session_scroll, 0);
     }
 
     #[test]
