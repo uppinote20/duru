@@ -67,7 +67,10 @@ impl App {
             self.should_quit = true;
             return;
         }
+        self.handle_key_memory(key);
+    }
 
+    fn handle_key_memory(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Char('q') => self.should_quit = true,
             KeyCode::Up | KeyCode::Char('k') => self.move_up(),
