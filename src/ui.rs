@@ -413,7 +413,6 @@ fn render_help_bar(frame: &mut Frame, mode: AppMode, theme: &Theme, area: Rect) 
 }
 
 const TTL_BAR_WIDTH: usize = 8;
-const TTL_SECS: i64 = 300;
 
 pub(crate) fn ttl_cell_parts(remaining_secs: i64, theme: &Theme) -> (String, Color) {
     if remaining_secs <= 0 {
@@ -421,7 +420,7 @@ pub(crate) fn ttl_cell_parts(remaining_secs: i64, theme: &Theme) -> (String, Col
     }
     let mins = remaining_secs / 60;
     let secs = remaining_secs % 60;
-    let ratio = remaining_secs as f64 / TTL_SECS as f64;
+    let ratio = remaining_secs as f64 / sessions::TTL_SECS as f64;
     let filled = (ratio * TTL_BAR_WIDTH as f64).round() as usize;
     let filled = filled.min(TTL_BAR_WIDTH);
     let color = if ratio > 0.5 {

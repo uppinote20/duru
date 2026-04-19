@@ -53,12 +53,14 @@ pub fn format_duration(secs: i64) -> String {
 }
 
 pub fn format_bytes(bytes: u64) -> String {
+    // Binary units (K = 1024, M = 1024²) to match ui::format_size so a file
+    // shown in both Memory and Sessions modes displays the same size.
     if bytes < 1024 {
         format!("{}B", bytes)
-    } else if bytes < 1_000_000 {
-        format!("{}K", bytes / 1000)
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1}K", bytes as f64 / 1024.0)
     } else {
-        format!("{:.1}M", bytes as f64 / 1_000_000.0)
+        format!("{:.1}M", bytes as f64 / (1024.0 * 1024.0))
     }
 }
 
@@ -74,12 +76,19 @@ pub fn middle_truncate(s: &str, max: usize) -> String {
     format!("{head}…{tail}")
 }
 
+/// Anthropic's default prompt cache TTL in seconds (5 minutes).
+///
+/// This is the canonical source; `ui::render_ttl_cell` imports it for the
+/// progress-bar denominator. The `State::Active` window is aligned with this
+/// value so "Active" visually signals "cache likely still warm".
+pub const TTL_SECS: i64 = 300;
+
 pub fn state_at(entry: &SessionEntry, now: DateTime<Utc>) -> State {
     if entry.has_last_prompt {
         return State::Stale;
     }
     let elapsed = (now - entry.last_activity).num_seconds();
-    if elapsed < 300 {
+    if elapsed < TTL_SECS {
         State::Active
     } else if elapsed < 3600 {
         State::Idle
@@ -90,7 +99,7 @@ pub fn state_at(entry: &SessionEntry, now: DateTime<Utc>) -> State {
 
 pub fn cache_ttl_remaining_secs(entry: &SessionEntry, now: DateTime<Utc>) -> i64 {
     let elapsed = (now - entry.last_activity).num_seconds();
-    (300 - elapsed).max(0)
+    (TTL_SECS - elapsed).max(0)
 }
 
 #[derive(Debug, Default, Clone)]
@@ -431,17 +440,27 @@ mod tests {
 
     #[test]
     fn format_bytes_kilobytes() {
-        assert_eq!(format_bytes(180_000), "180K");
+        // 180_000 / 1024 = 175.781… → "175.8K" (binary units match ui::format_size)
+        assert_eq!(format_bytes(180_000), "175.8K");
     }
 
     #[test]
     fn format_bytes_megabytes() {
-        assert_eq!(format_bytes(1_200_000), "1.2M");
+        // 1_200_000 / (1024 × 1024) = 1.144… → "1.1M"
+        assert_eq!(format_bytes(1_200_000), "1.1M");
     }
 
     #[test]
     fn format_bytes_under_1k() {
         assert_eq!(format_bytes(512), "512B");
+    }
+
+    #[test]
+    fn format_bytes_matches_ui_format_size_conventions() {
+        // Both functions must agree on binary units so the same file shows
+        // the same size across Memory and Sessions modes.
+        assert_eq!(format_bytes(2048), "2.0K");
+        assert_eq!(format_bytes(1_048_576), "1.0M");
     }
 
     #[test]
