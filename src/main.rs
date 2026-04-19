@@ -3,6 +3,7 @@
 #![allow(clippy::collapsible_match, clippy::collapsible_if)]
 
 mod app;
+mod hook_scripts;
 mod markdown;
 mod registry;
 mod scan;
