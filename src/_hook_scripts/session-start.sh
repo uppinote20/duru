@@ -18,8 +18,10 @@ jq -n \
   --arg tr "$TRANSCRIPT" --arg src "$SOURCE" --arg mode "$MODE" \
   --argjson pid "$PID_VAL" \
   '{schema_version:1, session_id:$sid, pid:$pid, cwd:$cwd,
-    transcript_path:$tr, started_at:$hb, source:($src | select(. != "")),
-    last_heartbeat:$hb, permission_mode:($mode | select(. != "")),
+    transcript_path:$tr, started_at:$hb,
+    source:(if $src == "" then null else $src end),
+    last_heartbeat:$hb,
+    permission_mode:(if $mode == "" then null else $mode end),
     terminated:false}' \
   > "$TMP"
 mv "$TMP" "$REGISTRY"

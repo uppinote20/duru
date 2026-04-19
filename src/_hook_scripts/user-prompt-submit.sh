@@ -20,7 +20,8 @@ else
         --arg cwd "$CWD" --arg tr "$TRANSCRIPT" --argjson pid "${PPID:-0}" \
     '{schema_version:1, session_id:$sid, pid:$pid, cwd:$cwd,
       transcript_path:$tr, started_at:$hb, last_heartbeat:$hb,
-      permission_mode:($mode | select(. != "")), terminated:false}' \
+      permission_mode:(if $mode == "" then null else $mode end),
+      terminated:false}' \
     > "$TMP"
 fi
 mv "$TMP" "$REGISTRY"
