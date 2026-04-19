@@ -51,15 +51,15 @@ fn resolve_editor_from(visual: Option<&str>, editor: Option<&str>) -> String {
 fn main() -> io::Result<()> {
     let cli = Cli::parse();
 
+    let claude_dir = cli.path.clone().unwrap_or_else(|| {
+        dirs::home_dir()
+            .expect("cannot resolve home directory")
+            .join(".claude")
+    });
+
     let projects = if cli.demo {
         demo_projects()
     } else {
-        let claude_dir = cli.path.unwrap_or_else(|| {
-            dirs::home_dir()
-                .expect("cannot resolve home directory")
-                .join(".claude")
-        });
-
         if !claude_dir.is_dir() {
             eprintln!("error: {} does not exist", claude_dir.display());
             std::process::exit(1);
@@ -90,7 +90,10 @@ fn main() -> io::Result<()> {
     terminal.clear()?;
 
     let mut app = App::new(projects);
-    let result = run_app(&mut terminal, &mut app, &theme, use_alt_screen);
+    if cli.demo {
+        app = app.with_demo_sessions(sessions::demo_sessions());
+    }
+    let result = run_app(&mut terminal, &mut app, &theme, use_alt_screen, &claude_dir);
 
     disable_raw_mode()?;
     if use_alt_screen {
@@ -105,6 +108,7 @@ fn run_app(
     app: &mut App,
     theme: &Theme,
     use_alt_screen: bool,
+    claude_dir: &std::path::Path,
 ) -> io::Result<()> {
     loop {
         terminal.draw(|frame| ui::render(frame, app, theme))?;
@@ -113,6 +117,22 @@ fn run_app(
             && let crossterm::event::Event::Key(key) = crossterm::event::read()?
         {
             app.handle_key(key);
+        }
+
+        // Periodic Sessions refresh
+        if !app.skip_real_refresh
+            && app.mode == app::AppMode::Sessions
+            && app.last_refresh.elapsed() >= app.refresh_interval()
+        {
+            app.refresh_sessions(claude_dir);
+        }
+
+        // Consume wants_refresh flag
+        if app.wants_refresh {
+            app.wants_refresh = false;
+            if !app.skip_real_refresh {
+                app.refresh_sessions(claude_dir);
+            }
         }
 
         if app.wants_edit {
