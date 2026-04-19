@@ -293,8 +293,7 @@ fn parse_session_at(path: &Path, now: DateTime<Utc>) -> Option<SessionEntry> {
         .and_then(|n| n.to_str())
         .unwrap_or("")
         .to_string();
-    let project_name =
-        decode_project_name(&project_dir_name).unwrap_or_else(|| project_dir_name.clone());
+    let project_name = decode_project_name(&project_dir_name).unwrap_or(project_dir_name);
 
     // Lazy parse: for files older than the cutoff, skip opening the file.
     // The row still renders correctly as Stale — only started_at and cwd are
@@ -716,6 +715,61 @@ mod tests {
     fn parse_first_record_handles_empty_input() {
         let parsed = parse_first_record(b"" as &[u8]);
         assert!(parsed.session_id.is_none());
+    }
+
+    #[test]
+    fn parse_session_at_skips_parse_for_stale_file() {
+        // When mtime is older than LAZY_PARSE_CUTOFF_SECS the function must
+        // NOT open the file, so started_at and cwd stay None even though the
+        // jsonl has parseable content. session_id must fall back to filename.
+        let tmp = tempfile::tempdir().unwrap();
+        let proj = tmp.path().join("projects").join("-Users-old-project");
+        fs::create_dir_all(&proj).unwrap();
+        let uuid = "aabbccdd-0000-0000-0000-000000000000";
+        let path = proj.join(format!("{uuid}.jsonl"));
+        fs::write(
+            &path,
+            r#"{"type":"user","timestamp":"2024-01-01T00:00:00Z","cwd":"/not-loaded","sessionId":"from-content"}"#,
+        )
+        .unwrap();
+
+        let mtime: DateTime<Utc> = DateTime::from(path.metadata().unwrap().modified().unwrap());
+        let now = mtime + chrono::Duration::hours(25);
+        let entry = parse_session_at(&path, now).unwrap();
+
+        assert!(
+            entry.started_at.is_none(),
+            "lazy path must not parse started_at"
+        );
+        assert!(entry.cwd.is_none(), "lazy path must not parse cwd");
+        assert_eq!(
+            entry.session_id, uuid,
+            "lazy path falls back to filename uuid"
+        );
+    }
+
+    #[test]
+    fn parse_session_at_parses_when_recent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let proj = tmp.path().join("projects").join("-Users-fresh-project");
+        fs::create_dir_all(&proj).unwrap();
+        let uuid = "11112222-3333-4444-5555-666677778888";
+        let path = proj.join(format!("{uuid}.jsonl"));
+        fs::write(
+            &path,
+            r#"{"type":"user","timestamp":"2026-04-19T00:00:00Z","cwd":"/fresh","sessionId":"from-content"}"#,
+        )
+        .unwrap();
+
+        let mtime: DateTime<Utc> = DateTime::from(path.metadata().unwrap().modified().unwrap());
+        let now = mtime + chrono::Duration::minutes(30);
+        let entry = parse_session_at(&path, now).unwrap();
+
+        assert_eq!(
+            entry.cwd.as_deref().and_then(|p| p.to_str()),
+            Some("/fresh")
+        );
+        assert!(entry.started_at.is_some());
     }
 
     #[test]
