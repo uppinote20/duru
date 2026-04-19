@@ -61,6 +61,20 @@ pub fn check_jq_available() -> bool {
         .is_ok_and(|o| o.status.success())
 }
 
+/// Set mode 0o755 on Unix; no-op on Windows (NTFS uses ACLs, not POSIX bits).
+#[cfg(unix)]
+fn chmod_executable(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut perms = fs::metadata(path)?.permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(path, perms)
+}
+
+#[cfg(not(unix))]
+fn chmod_executable(_path: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
 pub fn install(home: &Path, opts: &InstallOpts) -> std::io::Result<()> {
     if !check_jq_available() {
         eprintln!("error: `jq` is required but not found on PATH.");
@@ -87,10 +101,7 @@ pub fn install(home: &Path, opts: &InstallOpts) -> std::io::Result<()> {
     for (name, content) in hook_scripts::all() {
         let path = hooks_dir(home).join(name);
         fs::write(&path, content)?;
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&path)?.permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&path, perms)?;
+        chmod_executable(&path)?;
     }
 
     merge_settings(home)?;
