@@ -4,6 +4,7 @@
 
 mod app;
 mod markdown;
+mod registry;
 mod scan;
 mod sessions;
 mod theme;
