@@ -53,22 +53,50 @@ duru --theme light      # force light theme
 duru --path ~/alt/.claude  # custom path
 ```
 
-### Navigation
+### Modes
+
+Press `Tab` to switch between two modes:
+
+- **Memory** (default) — Browse `CLAUDE.md` and memory files across all projects
+- **Sessions** — Live table of active Claude Code sessions with cache TTL countdowns
+
+### Memory mode keys
 
 | Key | Action |
 |-----|--------|
 | `↑↓` / `jk` | Navigate within pane |
 | `←→` / `hl` | Switch pane |
 | `Enter` | Enter next pane |
+| `e` | Edit selected file in `$EDITOR` |
+| `Tab` | Switch to Sessions mode |
+| `q` | Quit |
+
+### Sessions mode keys
+
+| Key | Action |
+|-----|--------|
+| `jk` / `↑↓` | Navigate rows (Table) / scroll (Detail) |
+| `hl` / `←→` | Toggle Table / Detail focus |
+| `s` | Cycle sort (activity → TTL → project → size) |
+| `r` | Force refresh |
+| `g` `G` | Jump to top / bottom |
+| `Tab` | Switch to Memory mode |
 | `q` | Quit |
 
 ## Layout
 
-Miller Columns (3-pane):
+**Memory mode** uses Miller Columns (3-pane):
 
 - **Pane 1** — All projects that have CLAUDE.md or memory files
 - **Pane 2** — Files in the selected project (CLAUDE.md, MEMORY.md, etc.)
 - **Pane 3** — File content preview
+
+**Sessions mode** uses a Table + Detail layout:
+
+- **Table** — 7 columns: state glyph, short ID, project, mode, last activity, cache TTL, size
+- **Detail** — Fixed 8-row panel showing full session metadata
+
+Cache TTL is shown as a hybrid `mm:ss ████▌·····` bar with color thresholds (green > 50%, yellow 20–50%, red < 20%).
 
 ## Theme
 
