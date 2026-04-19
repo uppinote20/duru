@@ -1,15 +1,42 @@
 use std::fs;
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::scan::Project;
+use crate::sessions::{SessionCache, SessionEntry, SessionsSort};
+
+/// Sessions-mode refresh cadence when any session had activity in the last
+/// `RECENT_ACTIVITY_SECS` — snappy enough for TTL countdowns to feel live.
+pub(crate) const FAST_POLL_MS: u64 = 1000;
+
+/// Sessions-mode refresh cadence when everything is quiet; backs off to
+/// reduce filesystem churn while still catching new sessions within a second
+/// or two.
+pub(crate) const SLOW_POLL_MS: u64 = 2000;
+
+/// Threshold below which a session counts as "recent activity" for the
+/// refresh-interval decision.
+pub(crate) const RECENT_ACTIVITY_SECS: i64 = 60;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pane {
     Projects,
     Files,
     Preview,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppMode {
+    Memory,
+    Sessions,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionsPane {
+    Table,
+    Detail,
 }
 
 pub struct App {
@@ -21,6 +48,18 @@ pub struct App {
     pub content: String,
     pub should_quit: bool,
     pub wants_edit: bool,
+
+    // Sessions mode
+    pub mode: AppMode,
+    pub session_cache: SessionCache,
+    pub sessions: Vec<SessionEntry>,
+    pub session_index: usize,
+    pub session_scroll: u16,
+    pub sessions_focus: SessionsPane,
+    pub sessions_sort: SessionsSort,
+    pub last_refresh: Instant,
+    pub wants_refresh: bool,
+    pub skip_real_refresh: bool,
 }
 
 impl App {
@@ -34,6 +73,17 @@ impl App {
             content: String::new(),
             should_quit: false,
             wants_edit: false,
+
+            mode: AppMode::Memory,
+            session_cache: SessionCache::new(),
+            sessions: Vec::new(),
+            session_index: 0,
+            session_scroll: 0,
+            sessions_focus: SessionsPane::Table,
+            sessions_sort: SessionsSort::default(),
+            last_refresh: Instant::now(),
+            wants_refresh: false,
+            skip_real_refresh: false,
         };
         app.load_content();
         app
@@ -67,7 +117,137 @@ impl App {
             self.should_quit = true;
             return;
         }
+        if matches!(key.code, KeyCode::Tab | KeyCode::BackTab) {
+            self.toggle_mode();
+            return;
+        }
+        match self.mode {
+            AppMode::Memory => self.handle_key_memory(key),
+            AppMode::Sessions => self.handle_key_sessions(key),
+        }
+    }
 
+    fn toggle_mode(&mut self) {
+        self.mode = match self.mode {
+            AppMode::Memory => AppMode::Sessions,
+            AppMode::Sessions => AppMode::Memory,
+        };
+        if self.mode == AppMode::Sessions && self.sessions.is_empty() && !self.skip_real_refresh {
+            self.wants_refresh = true;
+        }
+    }
+
+    fn handle_key_sessions(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Char('q') => self.should_quit = true,
+            KeyCode::Up | KeyCode::Char('k') => self.sessions_move_up(),
+            KeyCode::Down | KeyCode::Char('j') => self.sessions_move_down(),
+            KeyCode::Left | KeyCode::Char('h') => {
+                if self.sessions_focus == SessionsPane::Detail {
+                    self.sessions_focus = SessionsPane::Table;
+                }
+            }
+            KeyCode::Right | KeyCode::Char('l') | KeyCode::Enter => {
+                if self.sessions_focus == SessionsPane::Table {
+                    self.sessions_focus = SessionsPane::Detail;
+                }
+            }
+            KeyCode::Char('g') => {
+                if self.sessions_focus == SessionsPane::Table {
+                    self.session_index = 0;
+                    self.session_scroll = 0;
+                }
+            }
+            KeyCode::Char('G') => {
+                if self.sessions_focus == SessionsPane::Table && !self.sessions.is_empty() {
+                    self.session_index = self.sessions.len() - 1;
+                    self.session_scroll = 0;
+                }
+            }
+            KeyCode::Char('s') => self.cycle_sort(),
+            KeyCode::Char('r') => self.wants_refresh = true,
+            _ => {}
+        }
+    }
+
+    fn cycle_sort(&mut self) {
+        self.sessions_sort = match self.sessions_sort {
+            SessionsSort::LastActivity => SessionsSort::CacheTtl,
+            SessionsSort::CacheTtl => SessionsSort::Project,
+            SessionsSort::Project => SessionsSort::Size,
+            SessionsSort::Size => SessionsSort::LastActivity,
+        };
+    }
+
+    pub fn clamp_session_index(&mut self) {
+        if self.sessions.is_empty() {
+            self.session_index = 0;
+        } else if self.session_index >= self.sessions.len() {
+            self.session_index = self.sessions.len() - 1;
+        }
+    }
+
+    pub fn refresh_sessions(&mut self, claude_dir: &Path) {
+        use crate::sessions::sort_entries;
+        self.session_cache.refresh(claude_dir);
+        let mut entries = self.session_cache.entries();
+        sort_entries(&mut entries, self.sessions_sort, chrono::Utc::now());
+        self.sessions = entries;
+        self.clamp_session_index();
+        self.last_refresh = Instant::now();
+    }
+
+    pub fn refresh_interval(&self) -> Duration {
+        if self.mode != AppMode::Sessions {
+            return Duration::from_secs(3600);
+        }
+        let now = chrono::Utc::now();
+        let has_recent = self
+            .sessions
+            .iter()
+            .any(|e| (now - e.last_activity).num_seconds() < RECENT_ACTIVITY_SECS);
+        if has_recent {
+            Duration::from_millis(FAST_POLL_MS)
+        } else {
+            Duration::from_millis(SLOW_POLL_MS)
+        }
+    }
+
+    pub fn with_demo_sessions(mut self, demos: Vec<SessionEntry>) -> Self {
+        self.sessions = demos;
+        self.skip_real_refresh = true;
+        self
+    }
+
+    fn sessions_move_up(&mut self) {
+        match self.sessions_focus {
+            SessionsPane::Table => {
+                if self.session_index > 0 {
+                    self.session_index -= 1;
+                    self.session_scroll = 0;
+                }
+            }
+            SessionsPane::Detail => {
+                self.session_scroll = self.session_scroll.saturating_sub(1);
+            }
+        }
+    }
+
+    fn sessions_move_down(&mut self) {
+        match self.sessions_focus {
+            SessionsPane::Table => {
+                if self.session_index + 1 < self.sessions.len() {
+                    self.session_index += 1;
+                    self.session_scroll = 0;
+                }
+            }
+            SessionsPane::Detail => {
+                // Detail fits its 6-line content exactly — no scroll bound > 0.
+            }
+        }
+    }
+
+    fn handle_key_memory(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Char('q') => self.should_quit = true,
             KeyCode::Up | KeyCode::Char('k') => self.move_up(),
@@ -200,6 +380,234 @@ mod tests {
         assert_eq!(app.focus, Pane::Projects);
         assert_eq!(app.project_index, 0);
         assert_eq!(app.file_index, 0);
+    }
+
+    #[test]
+    fn new_app_starts_in_memory_mode() {
+        let app = App::new(make_test_projects());
+        assert_eq!(app.mode, AppMode::Memory);
+    }
+
+    fn app_in_sessions_mode() -> App {
+        use crate::sessions::demo_sessions;
+        let mut app = App::new(make_test_projects());
+        app.sessions = demo_sessions();
+        app.mode = AppMode::Sessions;
+        app
+    }
+
+    #[test]
+    fn sessions_mode_j_moves_row_down() {
+        let mut app = app_in_sessions_mode();
+        app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+        assert_eq!(app.session_index, 1);
+    }
+
+    #[test]
+    fn sessions_mode_k_moves_row_up() {
+        let mut app = app_in_sessions_mode();
+        app.session_index = 2;
+        app.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE));
+        assert_eq!(app.session_index, 1);
+    }
+
+    #[test]
+    fn sessions_mode_j_does_not_overflow() {
+        let mut app = app_in_sessions_mode();
+        app.session_index = app.sessions.len() - 1;
+        app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+        assert_eq!(app.session_index, app.sessions.len() - 1);
+    }
+
+    #[test]
+    fn sessions_mode_l_enters_detail() {
+        let mut app = app_in_sessions_mode();
+        app.handle_key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE));
+        assert_eq!(app.sessions_focus, SessionsPane::Detail);
+    }
+
+    #[test]
+    fn sessions_mode_h_exits_detail() {
+        let mut app = app_in_sessions_mode();
+        app.sessions_focus = SessionsPane::Detail;
+        app.handle_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE));
+        assert_eq!(app.sessions_focus, SessionsPane::Table);
+    }
+
+    #[test]
+    fn sessions_mode_g_jumps_top() {
+        let mut app = app_in_sessions_mode();
+        app.session_index = 3;
+        app.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE));
+        assert_eq!(app.session_index, 0);
+    }
+
+    #[test]
+    fn sessions_mode_shift_g_jumps_bottom() {
+        let mut app = app_in_sessions_mode();
+        app.session_index = 0;
+        app.handle_key(KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT));
+        assert_eq!(app.session_index, app.sessions.len() - 1);
+    }
+
+    #[test]
+    fn sessions_mode_q_quits() {
+        let mut app = app_in_sessions_mode();
+        app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn sessions_mode_e_ignored() {
+        let mut app = app_in_sessions_mode();
+        app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+        assert!(!app.wants_edit);
+    }
+
+    #[test]
+    fn sessions_mode_detail_k_scrolls_up() {
+        let mut app = app_in_sessions_mode();
+        app.sessions_focus = SessionsPane::Detail;
+        app.session_scroll = 2;
+        app.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE));
+        assert_eq!(app.session_scroll, 1);
+    }
+
+    #[test]
+    fn sessions_mode_detail_j_does_not_scroll_past_zero() {
+        let mut app = app_in_sessions_mode();
+        app.sessions_focus = SessionsPane::Detail;
+        for _ in 0..20 {
+            app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+        }
+        assert_eq!(app.session_scroll, 0);
+    }
+
+    #[test]
+    fn sessions_mode_j_resets_detail_scroll() {
+        let mut app = app_in_sessions_mode();
+        app.session_scroll = 3;
+        app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+        assert_eq!(app.session_index, 1);
+        assert_eq!(app.session_scroll, 0);
+    }
+
+    #[test]
+    fn sessions_mode_k_resets_detail_scroll() {
+        let mut app = app_in_sessions_mode();
+        app.session_index = 2;
+        app.session_scroll = 3;
+        app.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE));
+        assert_eq!(app.session_index, 1);
+        assert_eq!(app.session_scroll, 0);
+    }
+
+    #[test]
+    fn sessions_mode_g_resets_detail_scroll() {
+        let mut app = app_in_sessions_mode();
+        app.session_index = 3;
+        app.session_scroll = 3;
+        app.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE));
+        assert_eq!(app.session_index, 0);
+        assert_eq!(app.session_scroll, 0);
+    }
+
+    #[test]
+    fn sessions_mode_shift_g_resets_detail_scroll() {
+        let mut app = app_in_sessions_mode();
+        app.session_index = 0;
+        app.session_scroll = 3;
+        app.handle_key(KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT));
+        assert_eq!(app.session_index, app.sessions.len() - 1);
+        assert_eq!(app.session_scroll, 0);
+    }
+
+    #[test]
+    fn sessions_mode_s_cycles_sort() {
+        let mut app = app_in_sessions_mode();
+        assert_eq!(app.sessions_sort, SessionsSort::LastActivity);
+        app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
+        assert_eq!(app.sessions_sort, SessionsSort::CacheTtl);
+        app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
+        assert_eq!(app.sessions_sort, SessionsSort::Project);
+        app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
+        assert_eq!(app.sessions_sort, SessionsSort::Size);
+        app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
+        assert_eq!(app.sessions_sort, SessionsSort::LastActivity);
+    }
+
+    #[test]
+    fn sessions_mode_r_sets_wants_refresh() {
+        let mut app = app_in_sessions_mode();
+        app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
+        assert!(app.wants_refresh);
+    }
+
+    #[test]
+    fn session_index_clamps_when_list_shrinks() {
+        let mut app = app_in_sessions_mode();
+        app.session_index = 4;
+        app.sessions.truncate(2);
+        app.clamp_session_index();
+        assert_eq!(app.session_index, 1);
+    }
+
+    #[test]
+    fn session_index_clamps_to_zero_when_empty() {
+        let mut app = app_in_sessions_mode();
+        app.session_index = 4;
+        app.sessions.clear();
+        app.clamp_session_index();
+        assert_eq!(app.session_index, 0);
+    }
+
+    #[test]
+    fn refresh_interval_fast_when_activity_recent() {
+        let app = app_in_sessions_mode();
+        assert_eq!(app.refresh_interval(), Duration::from_millis(FAST_POLL_MS));
+    }
+
+    #[test]
+    fn refresh_interval_slow_when_all_idle() {
+        let mut app = app_in_sessions_mode();
+        let old = chrono::Utc::now() - chrono::Duration::hours(1);
+        for s in &mut app.sessions {
+            s.last_activity = old;
+        }
+        assert_eq!(app.refresh_interval(), Duration::from_millis(SLOW_POLL_MS));
+    }
+
+    #[test]
+    fn refresh_interval_disabled_in_memory_mode() {
+        let app = App::new(make_test_projects());
+        assert!(app.refresh_interval() >= Duration::from_secs(60));
+    }
+
+    #[test]
+    fn tab_key_toggles_mode() {
+        let mut app = App::new(make_test_projects());
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(app.mode, AppMode::Sessions);
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(app.mode, AppMode::Memory);
+    }
+
+    #[test]
+    fn back_tab_also_toggles_mode() {
+        let mut app = App::new(make_test_projects());
+        app.handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE));
+        assert_eq!(app.mode, AppMode::Sessions);
+    }
+
+    #[test]
+    fn toggle_preserves_memory_state() {
+        let mut app = App::new(make_test_projects());
+        app.focus = Pane::Files;
+        app.project_index = 1;
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(app.focus, Pane::Files);
+        assert_eq!(app.project_index, 1);
     }
 
     #[test]

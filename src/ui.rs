@@ -1,33 +1,276 @@
 use ratatui::{
     Frame,
-    layout::{Constraint, Layout, Rect},
-    style::{Modifier, Style},
+    layout::{Alignment, Constraint, Layout, Rect},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, List, ListItem, Paragraph, Wrap},
+    widgets::{
+        Block, BorderType, Borders, Cell, HighlightSpacing, List, ListItem, Paragraph, Row, Table,
+        TableState, Wrap,
+    },
 };
 
-use crate::app::{App, Pane};
+use crate::app::{App, AppMode, Pane, SessionsPane};
 use crate::markdown;
+use crate::sessions::{self, PermissionMode, State};
 use crate::theme::Theme;
 
 pub fn render(frame: &mut Frame, app: &App, theme: &Theme) {
     let area = frame.area();
 
-    // Main area + 1-line help bar
-    let outer = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(area);
+    // Layout: tab bar (1) / body (flex) / help bar (1)
+    let outer = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(1),
+        Constraint::Length(1),
+    ])
+    .split(area);
 
-    // 3-pane layout: 30% | 30% | 40%
+    render_tab_bar(frame, app.mode, theme, outer[0]);
+
+    match app.mode {
+        AppMode::Memory => render_memory_layout(frame, app, theme, outer[1]),
+        AppMode::Sessions => render_sessions_layout(frame, app, theme, outer[1]),
+    }
+
+    render_help_bar(frame, app.mode, theme, outer[2]);
+}
+
+fn render_memory_layout(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) {
     let chunks = Layout::horizontal([
         Constraint::Percentage(30),
         Constraint::Percentage(30),
         Constraint::Percentage(40),
     ])
-    .split(outer[0]);
+    .split(area);
 
     render_projects_pane(frame, app, theme, chunks[0]);
     render_files_pane(frame, app, theme, chunks[1]);
     render_preview_pane(frame, app, theme, chunks[2]);
-    render_help_bar(frame, theme, outer[1]);
+}
+
+fn render_sessions_layout(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) {
+    let chunks = Layout::vertical([
+        Constraint::Min(1),
+        Constraint::Length(SESSION_DETAIL_HEIGHT),
+    ])
+    .split(area);
+    render_sessions_table(frame, app, theme, chunks[0]);
+    render_sessions_detail(frame, app, theme, chunks[1]);
+}
+
+fn state_glyph(state: State, theme: &Theme) -> Span<'static> {
+    match state {
+        State::Active => Span::styled("●", Style::default().fg(theme.pine)),
+        State::Idle => Span::styled("◐", Style::default().fg(theme.muted)),
+        State::Stale => Span::styled("○", Style::default().fg(theme.overlay)),
+    }
+}
+
+fn mode_abbrev(mode: Option<&PermissionMode>) -> &str {
+    match mode {
+        Some(m) => m.abbrev(),
+        None => "—",
+    }
+}
+
+fn relative_age(last: chrono::DateTime<chrono::Utc>, now: chrono::DateTime<chrono::Utc>) -> String {
+    let elapsed = (now - last).num_seconds().max(0);
+    sessions::format_duration(elapsed)
+}
+
+fn render_sessions_table(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) {
+    let focused = app.sessions_focus == SessionsPane::Table;
+    let now = chrono::Utc::now();
+
+    // One pass: compute per-entry state once; reuse for both the header
+    // counts and the row rendering. state_at is cheap but it's in the
+    // 100ms draw hot path × N rows × 3 callsites — collapse to one.
+    let states: Vec<State> = app
+        .sessions
+        .iter()
+        .map(|e| sessions::state_at(e, now))
+        .collect();
+    let (active, idle) = states.iter().fold((0usize, 0usize), |(a, i), s| match s {
+        State::Active => (a + 1, i),
+        State::Idle => (a, i + 1),
+        State::Stale => (a, i),
+    });
+    let title = format!("Sessions ({} active · {} idle)", active, idle);
+    let block = pane_block(&title, focused, theme);
+
+    if app.sessions.is_empty() {
+        let p = Paragraph::new("(no sessions found)")
+            .block(block)
+            .style(Style::default().fg(theme.muted).bg(theme.base))
+            .alignment(Alignment::Center);
+        frame.render_widget(p, area);
+        return;
+    }
+
+    let header = Row::new(vec![
+        "",
+        "ID",
+        "Project",
+        "Mode",
+        "Last",
+        "Cache TTL",
+        "Size",
+    ])
+    .style(Style::default().fg(theme.text).add_modifier(Modifier::BOLD))
+    .bottom_margin(1);
+
+    let rows: Vec<Row> = app
+        .sessions
+        .iter()
+        .zip(states.iter())
+        .map(|(entry, &state)| {
+            let row_fg = match state {
+                State::Active => theme.text,
+                State::Idle => theme.muted,
+                State::Stale => theme.overlay,
+            };
+            let remaining = sessions::cache_ttl_remaining_secs(entry, now);
+            let project = sessions::middle_truncate(&entry.project_name, PROJECT_NAME_MAX_WIDTH);
+
+            Row::new(vec![
+                Cell::from(Line::from(vec![Span::raw(" "), state_glyph(state, theme)])),
+                Cell::from(entry.short_id.clone()),
+                Cell::from(project),
+                Cell::from(mode_abbrev(entry.permission_mode.as_ref()).to_string()),
+                Cell::from(relative_age(entry.last_activity, now)),
+                render_ttl_cell(remaining, theme),
+                Cell::from(sessions::format_bytes(entry.file_size)),
+            ])
+            .style(Style::default().fg(row_fg))
+        })
+        .collect();
+
+    let widths = [
+        Constraint::Length(3),
+        Constraint::Length(8),
+        Constraint::Min(20),
+        Constraint::Length(9),
+        Constraint::Length(8),
+        Constraint::Length(14),
+        Constraint::Length(7),
+    ];
+
+    let table = Table::new(rows, widths)
+        .header(header)
+        .block(block)
+        .row_highlight_style(
+            Style::default()
+                .fg(theme.iris)
+                .bg(theme.overlay)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("▸ ")
+        .highlight_spacing(HighlightSpacing::Always)
+        .column_spacing(1);
+
+    let mut state = TableState::default();
+    state.select(Some(
+        app.session_index.min(app.sessions.len().saturating_sub(1)),
+    ));
+    frame.render_stateful_widget(table, area, &mut state);
+}
+
+fn render_sessions_detail(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) {
+    let focused = app.sessions_focus == SessionsPane::Detail;
+
+    let Some(entry) = app.sessions.get(app.session_index) else {
+        let block = pane_block("Detail", focused, theme);
+        frame.render_widget(
+            Paragraph::new("")
+                .block(block)
+                .style(Style::default().bg(theme.base)),
+            area,
+        );
+        return;
+    };
+
+    let title = format!("{} · {}", entry.short_id, entry.project_name);
+    let block = pane_block(&title, focused, theme);
+
+    let now = chrono::Utc::now();
+    let remaining = sessions::cache_ttl_remaining_secs(entry, now);
+    let (ttl_text, ttl_color) = ttl_cell_parts(remaining, theme);
+
+    let started_line = match entry.started_at {
+        Some(ts) => {
+            let age = sessions::format_duration((now - ts).num_seconds().max(0));
+            format!("{} ({} ago)", ts.format("%Y-%m-%d %H:%M"), age)
+        }
+        None => "—".to_string(),
+    };
+
+    let cwd_display = entry
+        .cwd
+        .as_deref()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| "—".to_string());
+
+    let last_str = relative_age(entry.last_activity, now);
+    let mode_str = mode_abbrev(entry.permission_mode.as_ref()).to_string();
+
+    let lines = vec![
+        Line::from(vec![
+            Span::styled("Session:    ", Style::default().fg(theme.muted)),
+            Span::raw(entry.session_id.clone()),
+        ]),
+        Line::from(vec![
+            Span::styled("Project:    ", Style::default().fg(theme.muted)),
+            Span::raw(entry.project_name.clone()),
+        ]),
+        Line::from(vec![
+            Span::styled("CWD:        ", Style::default().fg(theme.muted)),
+            Span::raw(cwd_display),
+        ]),
+        Line::from(vec![
+            Span::styled("Started:    ", Style::default().fg(theme.muted)),
+            Span::raw(started_line),
+            Span::styled("    Last: ", Style::default().fg(theme.muted)),
+            Span::raw(last_str),
+        ]),
+        Line::from(vec![
+            Span::styled("Mode:       ", Style::default().fg(theme.muted)),
+            Span::raw(mode_str),
+            Span::styled("    TTL: ", Style::default().fg(theme.muted)),
+            Span::styled(ttl_text, Style::default().fg(ttl_color)),
+        ]),
+        Line::from(vec![
+            Span::styled("Transcript: ", Style::default().fg(theme.muted)),
+            Span::raw(entry.transcript_path.to_string_lossy().to_string()),
+        ]),
+    ];
+
+    let p = Paragraph::new(lines)
+        .block(block)
+        .style(Style::default().fg(theme.text).bg(theme.base))
+        .scroll((app.session_scroll, 0));
+    frame.render_widget(p, area);
+}
+
+fn render_tab_bar(frame: &mut Frame, mode: AppMode, theme: &Theme, area: Rect) {
+    let style_active = Style::default().fg(theme.iris).add_modifier(Modifier::BOLD);
+    let style_muted = Style::default().fg(theme.muted);
+
+    let (mem_style, ses_style) = match mode {
+        AppMode::Memory => (style_active, style_muted),
+        AppMode::Sessions => (style_muted, style_active),
+    };
+
+    let line = Line::from(vec![
+        Span::styled("  Memory  ", mem_style),
+        Span::styled("│", Style::default().fg(theme.overlay)),
+        Span::styled("  Sessions  ", ses_style),
+        Span::styled("   (Tab to switch)", Style::default().fg(theme.overlay)),
+    ]);
+
+    frame.render_widget(
+        Paragraph::new(line).style(Style::default().bg(theme.surface)),
+        area,
+    );
 }
 
 fn pane_block<'a>(title: &'a str, focused: bool, theme: &'a Theme) -> Block<'a> {
@@ -101,7 +344,7 @@ fn render_files_pane(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) {
                     };
 
                     let prefix = if is_selected { "▸ " } else { "  " };
-                    let size = format_size(file.size);
+                    let size = sessions::format_bytes(file.size);
 
                     ListItem::new(Line::from(vec![
                         Span::styled(prefix, style),
@@ -138,29 +381,86 @@ fn render_preview_pane(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) 
     frame.render_widget(paragraph, area);
 }
 
-fn render_help_bar(frame: &mut Frame, theme: &Theme, area: Rect) {
-    let help = Line::from(vec![
-        Span::styled(" ↑↓", Style::default().fg(theme.text)),
-        Span::styled(" navigate  ", Style::default().fg(theme.muted)),
-        Span::styled("←→", Style::default().fg(theme.text)),
-        Span::styled(" pane  ", Style::default().fg(theme.muted)),
-        Span::styled("e", Style::default().fg(theme.text)),
-        Span::styled(" edit  ", Style::default().fg(theme.muted)),
-        Span::styled("q", Style::default().fg(theme.text)),
-        Span::styled(" quit", Style::default().fg(theme.muted)),
-    ]);
+fn render_help_bar(frame: &mut Frame, mode: AppMode, theme: &Theme, area: Rect) {
+    let entries: &[(&str, &str)] = match mode {
+        AppMode::Memory => &[
+            ("↑↓", "navigate"),
+            ("←→", "pane"),
+            ("e", "edit"),
+            ("Tab", "sessions"),
+            ("q", "quit"),
+        ],
+        AppMode::Sessions => &[
+            ("↑↓", "navigate"),
+            ("←→", "pane"),
+            ("s", "sort"),
+            ("r", "refresh"),
+            ("Tab", "memory"),
+            ("q", "quit"),
+        ],
+    };
+
+    let mut spans = Vec::with_capacity(entries.len() * 2);
+    for (i, (key, label)) in entries.iter().enumerate() {
+        let prefix = if i == 0 { " " } else { "" };
+        spans.push(Span::styled(
+            format!("{prefix}{key}"),
+            Style::default().fg(theme.text),
+        ));
+        spans.push(Span::styled(
+            format!(" {label}  "),
+            Style::default().fg(theme.muted),
+        ));
+    }
+
     frame.render_widget(
-        Paragraph::new(help).style(Style::default().bg(theme.surface)),
+        Paragraph::new(Line::from(spans)).style(Style::default().bg(theme.surface)),
         area,
     );
 }
 
-fn format_size(bytes: u64) -> String {
-    if bytes < 1024 {
-        format!("{bytes}B")
-    } else {
-        format!("{:.1}K", bytes as f64 / 1024.0)
+const TTL_BAR_WIDTH: usize = 8;
+
+/// Height of the Sessions-mode detail panel (includes 2 border rows).
+const SESSION_DETAIL_HEIGHT: u16 = 8;
+
+/// Max width the Project column renders before middle-truncating.
+const PROJECT_NAME_MAX_WIDTH: usize = 22;
+
+/// Cache-TTL color thresholds. Remaining-ratio above WARN → green, between
+/// CRIT and WARN → yellow, below CRIT → red + BOLD.
+const TTL_WARN_RATIO: f64 = 0.5;
+const TTL_CRIT_RATIO: f64 = 0.2;
+
+pub(crate) fn ttl_cell_parts(remaining_secs: i64, theme: &Theme) -> (String, Color) {
+    if remaining_secs <= 0 {
+        return ("— expired".to_string(), theme.muted);
     }
+    let mins = remaining_secs / 60;
+    let secs = remaining_secs % 60;
+    let ratio = remaining_secs as f64 / sessions::TTL_SECS as f64;
+    let filled = (ratio * TTL_BAR_WIDTH as f64).round() as usize;
+    let filled = filled.min(TTL_BAR_WIDTH);
+    let color = if ratio > TTL_WARN_RATIO {
+        theme.pine
+    } else if ratio > TTL_CRIT_RATIO {
+        theme.gold
+    } else {
+        theme.love
+    };
+    let bar: String = "█".repeat(filled) + &"·".repeat(TTL_BAR_WIDTH - filled);
+    let text = format!("{:02}:{:02} {}", mins, secs, bar);
+    (text, color)
+}
+
+pub(crate) fn render_ttl_cell(remaining_secs: i64, theme: &Theme) -> Cell<'static> {
+    let (text, color) = ttl_cell_parts(remaining_secs, theme);
+    let style = if remaining_secs > 0 && remaining_secs < 60 {
+        Style::default().fg(color).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(color)
+    };
+    Cell::from(Line::from(Span::styled(text, style)))
 }
 
 #[cfg(test)]
@@ -168,14 +468,46 @@ mod tests {
     use super::*;
 
     #[test]
-    fn format_size_shows_bytes_for_small() {
-        assert_eq!(format_size(100), "100B");
-        assert_eq!(format_size(0), "0B");
+    fn ttl_cell_expired_has_em_dash() {
+        let theme = Theme::dark();
+        let (text, _) = ttl_cell_parts(0, &theme);
+        assert!(text.contains("— expired"));
     }
 
     #[test]
-    fn format_size_shows_kb_for_large() {
-        assert_eq!(format_size(2048), "2.0K");
-        assert_eq!(format_size(1536), "1.5K");
+    fn ttl_cell_has_mm_ss_format() {
+        let theme = Theme::dark();
+        let (text, _) = ttl_cell_parts(277, &theme);
+        assert!(text.starts_with("04:37"));
+    }
+
+    #[test]
+    fn ttl_cell_high_uses_pine() {
+        let theme = Theme::dark();
+        let (_, color) = ttl_cell_parts(270, &theme);
+        assert_eq!(color, theme.pine);
+    }
+
+    #[test]
+    fn ttl_cell_medium_uses_gold() {
+        let theme = Theme::dark();
+        let (_, color) = ttl_cell_parts(120, &theme);
+        assert_eq!(color, theme.gold);
+    }
+
+    #[test]
+    fn ttl_cell_low_uses_love() {
+        let theme = Theme::dark();
+        let (_, color) = ttl_cell_parts(30, &theme);
+        assert_eq!(color, theme.love);
+    }
+
+    #[test]
+    fn ttl_cell_bar_shrinks_as_time_elapses() {
+        let theme = Theme::dark();
+        let (full_text, _) = ttl_cell_parts(300, &theme);
+        let (empty_text, _) = ttl_cell_parts(1, &theme);
+        let filled = |s: &str| s.matches('█').count();
+        assert!(filled(&full_text) >= filled(&empty_text));
     }
 }

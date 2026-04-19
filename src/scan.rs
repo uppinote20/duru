@@ -36,7 +36,7 @@ pub struct Project {
 /// 2. Split by `-` and greedy-match against filesystem to resolve literal dashes
 ///
 /// Returns `None` if the original project directory no longer exists on disk.
-fn decode_project_name(encoded: &str) -> Option<String> {
+pub(crate) fn decode_project_name(encoded: &str) -> Option<String> {
     // Step 1: `--` → `/_` (restores underscore-prefixed dirs like `_active`)
     let normalized = encoded.replace("--", "/_");
 
@@ -177,7 +177,7 @@ pub fn scan_claude_dir(claude_dir: &Path) -> Vec<Project> {
         .collect();
 
     // Sort projects alphabetically
-    project_entries.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    project_entries.sort_by_key(|a| a.name.to_lowercase());
 
     // Deduplicate: Claude Code has two encoding schemes (old: `_active`, new: `--active`)
     // Keep the more recently modified entry
