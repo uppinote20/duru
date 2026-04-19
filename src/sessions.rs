@@ -309,7 +309,7 @@ fn parse_session_at(path: &Path, now: DateTime<Utc>) -> Option<SessionEntry> {
         (first, tail)
     };
 
-    let session_id = first.session_id.unwrap_or_else(|| filename_uuid.clone());
+    let session_id = first.session_id.unwrap_or(filename_uuid);
     let short = short_id(&session_id);
     let last_activity = tail.last_activity.unwrap_or(mtime);
 
