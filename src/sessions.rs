@@ -1,5 +1,6 @@
-use std::io::{BufRead, BufReader, Read};
-use std::path::PathBuf;
+use std::fs::File;
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
+use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 
@@ -143,6 +144,52 @@ pub fn parse_first_record<R: Read>(reader: R) -> FirstRecord {
         }
     }
     out
+}
+
+const TAIL_CHUNK_BYTES: u64 = 8192;
+
+#[derive(Debug, Default, Clone)]
+pub struct TailRecord {
+    pub last_activity: Option<DateTime<Utc>>,
+    pub has_last_prompt: bool,
+}
+
+pub fn parse_tail(path: &Path) -> std::io::Result<TailRecord> {
+    let mut file = File::open(path)?;
+    let file_len = file.metadata()?.len();
+
+    if file_len > TAIL_CHUNK_BYTES {
+        file.seek(SeekFrom::End(-(TAIL_CHUNK_BYTES as i64)))?;
+        // Drop potentially-partial first line after seek
+        let mut discard = String::new();
+        let mut reader = BufReader::new(&mut file);
+        let _ = reader.read_line(&mut discard);
+    }
+
+    let mut out = TailRecord::default();
+    let buf = BufReader::new(file);
+
+    for line in buf.lines().flatten() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
+            continue;
+        };
+        if value.get("type").and_then(|v| v.as_str()) == Some("last-prompt") {
+            out.has_last_prompt = true;
+        }
+        if let Some(ts) = value.get("timestamp").and_then(|v| v.as_str())
+            && let Ok(dt) = DateTime::parse_from_rfc3339(ts)
+        {
+            let dt_utc = dt.with_timezone(&Utc);
+            out.last_activity = Some(match out.last_activity {
+                Some(prev) if prev > dt_utc => prev,
+                _ => dt_utc,
+            });
+        }
+    }
+    Ok(out)
 }
 
 pub fn sort_entries(entries: &mut [SessionEntry], sort: SessionsSort, now: DateTime<Utc>) {
@@ -307,6 +354,59 @@ mod tests {
         sort_entries(&mut entries, SessionsSort::Project, now);
         assert_eq!(entries[0].session_id, "a");
         assert_eq!(entries[2].session_id, "c");
+    }
+
+    use std::io::Write;
+
+    fn tempfile_with(lines: &[&str]) -> tempfile::NamedTempFile {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        for line in lines {
+            writeln!(f, "{line}").unwrap();
+        }
+        f
+    }
+
+    #[test]
+    fn parse_tail_finds_last_timestamp() {
+        let file = tempfile_with(&[
+            r#"{"type":"user","timestamp":"2026-04-19T06:00:00Z","sessionId":"x"}"#,
+            r#"{"type":"assistant","timestamp":"2026-04-19T06:05:00Z","sessionId":"x"}"#,
+            r#"{"type":"user","timestamp":"2026-04-19T06:10:00Z","sessionId":"x"}"#,
+        ]);
+        let parsed = parse_tail(file.path()).unwrap();
+        assert_eq!(
+            parsed.last_activity.map(|d| d.to_rfc3339()),
+            Some("2026-04-19T06:10:00+00:00".to_string())
+        );
+        assert!(!parsed.has_last_prompt);
+    }
+
+    #[test]
+    fn parse_tail_detects_last_prompt_record() {
+        let file = tempfile_with(&[
+            r#"{"type":"user","timestamp":"2026-04-19T06:00:00Z","sessionId":"x"}"#,
+            r#"{"type":"last-prompt","timestamp":"2026-04-19T06:10:00Z","lastPrompt":"bye"}"#,
+        ]);
+        let parsed = parse_tail(file.path()).unwrap();
+        assert!(parsed.has_last_prompt);
+    }
+
+    #[test]
+    fn parse_tail_handles_empty_file() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let parsed = parse_tail(file.path()).unwrap();
+        assert!(parsed.last_activity.is_none());
+        assert!(!parsed.has_last_prompt);
+    }
+
+    #[test]
+    fn parse_tail_ignores_invalid_json_lines() {
+        let file = tempfile_with(&[
+            r#"not valid json"#,
+            r#"{"type":"user","timestamp":"2026-04-19T06:00:00Z"}"#,
+        ]);
+        let parsed = parse_tail(file.path()).unwrap();
+        assert!(parsed.last_activity.is_some());
     }
 
     #[test]
