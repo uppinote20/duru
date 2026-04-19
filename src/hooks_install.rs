@@ -170,6 +170,103 @@ fn maybe_star_prompt(_home: &Path, _opts: &InstallOpts) -> std::io::Result<()> {
     Ok(())
 }
 
+pub struct StatusReport {
+    pub installed: bool,
+    pub events_present: Vec<String>,
+    pub events_missing: Vec<String>,
+    pub registry_alive: usize,
+    pub registry_terminated: usize,
+}
+
+pub fn status(home: &Path) -> std::io::Result<StatusReport> {
+    let settings = settings_path(home);
+    let mut events_present = Vec::new();
+    let mut events_missing: Vec<String> = Vec::new();
+
+    if settings.exists() {
+        let raw = fs::read_to_string(&settings)?;
+        let parsed: serde_json::Value = serde_json::from_str(&raw)
+            .map_err(|e| std::io::Error::other(format!("settings.json invalid: {e}")))?;
+        let hooks = &parsed["hooks"];
+        for event in EVENTS {
+            let has_duru = hooks[event]
+                .as_array()
+                .map(|arr| {
+                    arr.iter().any(|e| {
+                        e["_duru"] == true
+                            || e["hooks"]
+                                .as_array()
+                                .map(|hs| {
+                                    hs.iter().any(|h| {
+                                        h["command"]
+                                            .as_str()
+                                            .map(|c| c.contains(".claude/duru/hooks/"))
+                                            .unwrap_or(false)
+                                    })
+                                })
+                                .unwrap_or(false)
+                    })
+                })
+                .unwrap_or(false);
+            if has_duru {
+                events_present.push((*event).to_string());
+            } else {
+                events_missing.push((*event).to_string());
+            }
+        }
+    } else {
+        events_missing = EVENTS.iter().map(|s| (*s).to_string()).collect();
+    }
+
+    let mut alive = 0usize;
+    let mut terminated = 0usize;
+    if let Ok(read_dir) = fs::read_dir(registry_dir(home)) {
+        for entry in read_dir.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            if let Ok(bytes) = fs::read(&path)
+                && let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(&bytes)
+            {
+                if parsed["terminated"] == true {
+                    terminated += 1;
+                } else {
+                    alive += 1;
+                }
+            }
+        }
+    }
+
+    Ok(StatusReport {
+        installed: events_missing.is_empty(),
+        events_present,
+        events_missing,
+        registry_alive: alive,
+        registry_terminated: terminated,
+    })
+}
+
+pub fn print_status(report: &StatusReport) {
+    println!(
+        "Hooks installed: {}",
+        if report.installed { "yes" } else { "no" }
+    );
+    for event in EVENTS {
+        let marker = if report.events_present.contains(&(*event).to_string()) {
+            "✓"
+        } else {
+            "✗"
+        };
+        println!("  {event:18} {marker}");
+    }
+    println!();
+    println!(
+        "Registry entries: {} alive, {} terminated",
+        report.registry_alive, report.registry_terminated
+    );
+}
+
 pub fn uninstall(home: &Path, opts: &UninstallOpts) -> std::io::Result<()> {
     if !check_jq_available() {
         eprintln!("error: `jq` is required but not found on PATH.");
@@ -392,6 +489,49 @@ mod tests {
             .iter()
             .any(|e| e["hooks"][0]["command"].as_str() == Some("bash /other/hook.sh"));
         assert!(has_other);
+    }
+
+    #[test]
+    fn status_reports_installed_when_all_six_present() {
+        let home = fake_home();
+        install(home.path(), &opts_install_silent()).unwrap();
+        let report = status(home.path()).unwrap();
+        assert!(report.installed);
+        for event in EVENTS {
+            assert!(
+                report.events_present.contains(&(*event).to_string()),
+                "{event} not reported present"
+            );
+        }
+    }
+
+    #[test]
+    fn status_reports_not_installed_on_empty_settings() {
+        let home = fake_home();
+        let report = status(home.path()).unwrap();
+        assert!(!report.installed);
+        assert!(report.events_present.is_empty());
+    }
+
+    #[test]
+    fn status_reports_registry_count() {
+        let home = fake_home();
+        install(home.path(), &opts_install_silent()).unwrap();
+        fs::write(
+            registry_dir(home.path()).join("abc.json"),
+            r#"{
+                "schema_version": 1,
+                "session_id": "abc",
+                "cwd": "/tmp",
+                "transcript_path": "/tmp/abc.jsonl",
+                "started_at": "2026-04-20T00:00:00Z",
+                "last_heartbeat": "2026-04-20T00:00:00Z",
+                "terminated": false
+            }"#,
+        )
+        .unwrap();
+        let report = status(home.path()).unwrap();
+        assert_eq!(report.registry_alive, 1);
     }
 
     #[test]
