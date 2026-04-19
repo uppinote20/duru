@@ -1,6 +1,10 @@
 //! Generate SVG screenshot of duru TUI with demo data.
 //! Usage: cargo run --example screenshot > screenshot.svg
 
+// The example imports all src modules via `#[path]` but only exercises a subset,
+// so dead_code warnings are expected and suppressed.
+#![allow(dead_code)]
+
 use ratatui::{Terminal, backend::TestBackend, style::Color};
 
 // Access internal modules via the binary crate's public API

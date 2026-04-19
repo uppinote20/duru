@@ -29,18 +29,13 @@ pub enum State {
     Stale,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SessionsSort {
+    #[default]
     LastActivity,
     CacheTtl,
     Project,
     Size,
-}
-
-impl Default for SessionsSort {
-    fn default() -> Self {
-        Self::LastActivity
-    }
 }
 
 pub fn short_id(uuid: &str) -> String {
@@ -110,7 +105,7 @@ pub fn parse_first_record<R: Read>(reader: R) -> FirstRecord {
     let buf = BufReader::new(reader);
     let mut out = FirstRecord::default();
 
-    for line in buf.lines().take(10).flatten() {
+    for line in buf.lines().take(10).map_while(Result::ok) {
         if line.trim().is_empty() {
             continue;
         }
@@ -173,7 +168,7 @@ pub fn parse_tail(path: &Path) -> std::io::Result<TailRecord> {
     let mut out = TailRecord::default();
     let buf = BufReader::new(file);
 
-    for line in buf.lines().flatten() {
+    for line in buf.lines().map_while(Result::ok) {
         if line.trim().is_empty() {
             continue;
         }
@@ -307,6 +302,7 @@ fn parse_session(path: &Path) -> Option<SessionEntry> {
     })
 }
 
+#[allow(dead_code)]
 pub fn scan_sessions(claude_dir: &Path) -> Vec<SessionEntry> {
     let mut cache = SessionCache::new();
     cache.refresh(claude_dir);
