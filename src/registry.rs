@@ -105,6 +105,23 @@ impl Registry {
     }
 }
 
+/// Derives the user-visible state for an entry.
+/// - Terminated flag from the registry wins unconditionally.
+/// - Dead pid → Terminated.
+/// - Missing pid → Alive (cannot prove death).
+/// - Otherwise Alive.
+pub fn classify(entry: &RegistryEntry) -> RegistrySource {
+    if entry.terminated {
+        return RegistrySource::Terminated;
+    }
+    if let Some(pid) = entry.pid
+        && !is_pid_alive(pid)
+    {
+        return RegistrySource::Terminated;
+    }
+    RegistrySource::Alive
+}
+
 /// Returns true if a process with `pid` currently exists.
 /// Uses `kill(pid, 0)` — zero signal means "check only, don't deliver".
 /// `EPERM` (process exists but not ours to signal) also counts as alive.
@@ -233,6 +250,48 @@ mod tests {
         );
         let reg = Registry::load_all(tmp.path());
         assert!(reg.get_by_session_id("future").is_none());
+    }
+
+    fn sample_entry(last_hb_secs_ago: i64, terminated: bool, pid: Option<u32>) -> RegistryEntry {
+        let now = Utc::now();
+        RegistryEntry {
+            schema_version: 1,
+            session_id: "test".to_string(),
+            pid,
+            cwd: PathBuf::from("/tmp"),
+            transcript_path: PathBuf::from("/tmp/test.jsonl"),
+            started_at: now - chrono::Duration::hours(1),
+            source: Some("startup".to_string()),
+            last_heartbeat: now - chrono::Duration::seconds(last_hb_secs_ago),
+            permission_mode: Some("auto".to_string()),
+            terminated,
+            ended_at: if terminated { Some(now) } else { None },
+            end_reason: if terminated { Some("other".to_string()) } else { None },
+        }
+    }
+
+    #[test]
+    fn classify_alive_when_not_terminated_and_pid_alive() {
+        let entry = sample_entry(30, false, Some(std::process::id()));
+        assert_eq!(classify(&entry), RegistrySource::Alive);
+    }
+
+    #[test]
+    fn classify_terminated_flag_true() {
+        let entry = sample_entry(30, true, Some(std::process::id()));
+        assert_eq!(classify(&entry), RegistrySource::Terminated);
+    }
+
+    #[test]
+    fn classify_dead_pid_is_terminated() {
+        let entry = sample_entry(30, false, Some(4_000_000));
+        assert_eq!(classify(&entry), RegistrySource::Terminated);
+    }
+
+    #[test]
+    fn classify_no_pid_and_not_terminated_is_alive() {
+        let entry = sample_entry(30, false, None);
+        assert_eq!(classify(&entry), RegistrySource::Alive);
     }
 
     #[test]
