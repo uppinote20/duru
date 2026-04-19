@@ -157,8 +157,12 @@ pub fn classify(entry: &RegistryEntry) -> RegistrySource {
 }
 
 /// Returns true if a process with `pid` currently exists.
-/// Uses `kill(pid, 0)` — zero signal means "check only, don't deliver".
+/// On Unix uses `kill(pid, 0)` — zero signal means "check only, don't deliver".
 /// `EPERM` (process exists but not ours to signal) also counts as alive.
+/// On Windows we cannot check from bash hooks (the captured pid is the bash
+/// shell's parent, which does not map cleanly); return `true` so the registry
+/// entry falls back to the mtime-based liveness instead.
+#[cfg(unix)]
 pub fn is_pid_alive(pid: u32) -> bool {
     if pid == 0 {
         return false;
@@ -172,24 +176,43 @@ pub fn is_pid_alive(pid: u32) -> bool {
     err == Some(libc::EPERM)
 }
 
+#[cfg(not(unix))]
+pub fn is_pid_alive(_pid: u32) -> bool {
+    // Conservative default: we cannot prove death on this platform without
+    // extra APIs we have chosen not to depend on. Callers fall through to
+    // the mtime-based liveness check, which is the MVP1 behavior.
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     #[test]
     fn is_pid_alive_returns_true_for_current_process() {
         let own_pid = std::process::id();
         assert!(is_pid_alive(own_pid));
     }
 
+    #[cfg(unix)]
     #[test]
     fn is_pid_alive_returns_false_for_impossible_pid() {
         assert!(!is_pid_alive(4_000_000));
     }
 
+    #[cfg(unix)]
     #[test]
     fn is_pid_alive_for_zero_returns_false() {
         assert!(!is_pid_alive(0));
+    }
+
+    #[cfg(not(unix))]
+    #[test]
+    fn is_pid_alive_returns_true_on_non_unix() {
+        // Conservative default; documented in is_pid_alive doc comment.
+        assert!(is_pid_alive(std::process::id()));
+        assert!(is_pid_alive(4_000_000));
     }
 
     use std::io::Write;
