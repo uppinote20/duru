@@ -6,28 +6,68 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, List, ListItem, Paragraph, Wrap},
 };
 
-use crate::app::{App, Pane};
+use crate::app::{App, AppMode, Pane};
 use crate::markdown;
 use crate::theme::Theme;
 
 pub fn render(frame: &mut Frame, app: &App, theme: &Theme) {
     let area = frame.area();
 
-    // Main area + 1-line help bar
-    let outer = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(area);
+    // Layout: tab bar (1) / body (flex) / help bar (1)
+    let outer = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(1),
+        Constraint::Length(1),
+    ])
+    .split(area);
 
-    // 3-pane layout: 30% | 30% | 40%
+    render_tab_bar(frame, app.mode, theme, outer[0]);
+
+    match app.mode {
+        AppMode::Memory => render_memory_layout(frame, app, theme, outer[1]),
+        AppMode::Sessions => render_sessions_layout(frame, app, theme, outer[1]),
+    }
+
+    render_help_bar(frame, app.mode, theme, outer[2]);
+}
+
+fn render_memory_layout(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) {
     let chunks = Layout::horizontal([
         Constraint::Percentage(30),
         Constraint::Percentage(30),
         Constraint::Percentage(40),
     ])
-    .split(outer[0]);
+    .split(area);
 
     render_projects_pane(frame, app, theme, chunks[0]);
     render_files_pane(frame, app, theme, chunks[1]);
     render_preview_pane(frame, app, theme, chunks[2]);
-    render_help_bar(frame, theme, outer[1]);
+}
+
+fn render_sessions_layout(_frame: &mut Frame, _app: &App, _theme: &Theme, _area: Rect) {
+    // Implemented in Task 16
+}
+
+fn render_tab_bar(frame: &mut Frame, mode: AppMode, theme: &Theme, area: Rect) {
+    let style_active = Style::default().fg(theme.iris).add_modifier(Modifier::BOLD);
+    let style_muted = Style::default().fg(theme.muted);
+
+    let (mem_style, ses_style) = match mode {
+        AppMode::Memory => (style_active, style_muted),
+        AppMode::Sessions => (style_muted, style_active),
+    };
+
+    let line = Line::from(vec![
+        Span::styled("  Memory  ", mem_style),
+        Span::styled("│", Style::default().fg(theme.overlay)),
+        Span::styled("  Sessions  ", ses_style),
+        Span::styled("   (Tab to switch)", Style::default().fg(theme.overlay)),
+    ]);
+
+    frame.render_widget(
+        Paragraph::new(line).style(Style::default().bg(theme.surface)),
+        area,
+    );
 }
 
 fn pane_block<'a>(title: &'a str, focused: bool, theme: &'a Theme) -> Block<'a> {
@@ -138,17 +178,35 @@ fn render_preview_pane(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) 
     frame.render_widget(paragraph, area);
 }
 
-fn render_help_bar(frame: &mut Frame, theme: &Theme, area: Rect) {
-    let help = Line::from(vec![
-        Span::styled(" ↑↓", Style::default().fg(theme.text)),
-        Span::styled(" navigate  ", Style::default().fg(theme.muted)),
-        Span::styled("←→", Style::default().fg(theme.text)),
-        Span::styled(" pane  ", Style::default().fg(theme.muted)),
-        Span::styled("e", Style::default().fg(theme.text)),
-        Span::styled(" edit  ", Style::default().fg(theme.muted)),
-        Span::styled("q", Style::default().fg(theme.text)),
-        Span::styled(" quit", Style::default().fg(theme.muted)),
-    ]);
+fn render_help_bar(frame: &mut Frame, mode: AppMode, theme: &Theme, area: Rect) {
+    let help = match mode {
+        AppMode::Memory => Line::from(vec![
+            Span::styled(" ↑↓", Style::default().fg(theme.text)),
+            Span::styled(" navigate  ", Style::default().fg(theme.muted)),
+            Span::styled("←→", Style::default().fg(theme.text)),
+            Span::styled(" pane  ", Style::default().fg(theme.muted)),
+            Span::styled("e", Style::default().fg(theme.text)),
+            Span::styled(" edit  ", Style::default().fg(theme.muted)),
+            Span::styled("Tab", Style::default().fg(theme.text)),
+            Span::styled(" sessions  ", Style::default().fg(theme.muted)),
+            Span::styled("q", Style::default().fg(theme.text)),
+            Span::styled(" quit", Style::default().fg(theme.muted)),
+        ]),
+        AppMode::Sessions => Line::from(vec![
+            Span::styled(" ↑↓", Style::default().fg(theme.text)),
+            Span::styled(" navigate  ", Style::default().fg(theme.muted)),
+            Span::styled("←→", Style::default().fg(theme.text)),
+            Span::styled(" pane  ", Style::default().fg(theme.muted)),
+            Span::styled("s", Style::default().fg(theme.text)),
+            Span::styled(" sort  ", Style::default().fg(theme.muted)),
+            Span::styled("r", Style::default().fg(theme.text)),
+            Span::styled(" refresh  ", Style::default().fg(theme.muted)),
+            Span::styled("Tab", Style::default().fg(theme.text)),
+            Span::styled(" memory  ", Style::default().fg(theme.muted)),
+            Span::styled("q", Style::default().fg(theme.text)),
+            Span::styled(" quit", Style::default().fg(theme.muted)),
+        ]),
+    };
     frame.render_widget(
         Paragraph::new(help).style(Style::default().bg(theme.surface)),
         area,
