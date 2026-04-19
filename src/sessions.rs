@@ -311,26 +311,22 @@ pub fn scan_sessions(claude_dir: &Path) -> Vec<SessionEntry> {
 
 pub fn demo_sessions() -> Vec<SessionEntry> {
     let now = Utc::now();
-    let make = |id: &str,
-                project: &str,
-                secs_ago: i64,
-                last_prompt: bool,
-                size: u64,
-                mode: &str| {
-        let last_activity = now - chrono::Duration::seconds(secs_ago);
-        SessionEntry {
-            session_id: id.to_string(),
-            short_id: short_id(id),
-            project_name: project.to_string(),
-            cwd: Some(PathBuf::from(format!("/Users/demo/{project}"))),
-            transcript_path: PathBuf::from(format!("/tmp/duru-demo/{id}.jsonl")),
-            started_at: Some(last_activity - chrono::Duration::minutes(15)),
-            last_activity,
-            permission_mode: Some(mode.to_string()),
-            has_last_prompt: last_prompt,
-            file_size: size,
-        }
-    };
+    let make =
+        |id: &str, project: &str, secs_ago: i64, last_prompt: bool, size: u64, mode: &str| {
+            let last_activity = now - chrono::Duration::seconds(secs_ago);
+            SessionEntry {
+                session_id: id.to_string(),
+                short_id: short_id(id),
+                project_name: project.to_string(),
+                cwd: Some(PathBuf::from(format!("/Users/demo/{project}"))),
+                transcript_path: PathBuf::from(format!("/tmp/duru-demo/{id}.jsonl")),
+                started_at: Some(last_activity - chrono::Duration::minutes(15)),
+                last_activity,
+                permission_mode: Some(mode.to_string()),
+                has_last_prompt: last_prompt,
+                file_size: size,
+            }
+        };
     vec![
         make(
             "676b2e79-2ee5-4a7b-8cd3-2a5034cac2e6",
@@ -604,10 +600,7 @@ mod tests {
         cache.refresh(tmp.path());
         assert!(
             cache.entries().len() < initial_count
-                || !cache
-                    .entries()
-                    .iter()
-                    .any(|e| e.transcript_path == jsonl)
+                || !cache.entries().iter().any(|e| e.transcript_path == jsonl)
         );
     }
 

@@ -72,10 +72,7 @@ fn mode_abbrev(mode: Option<&str>) -> &'static str {
     }
 }
 
-fn relative_age(
-    last: chrono::DateTime<chrono::Utc>,
-    now: chrono::DateTime<chrono::Utc>,
-) -> String {
+fn relative_age(last: chrono::DateTime<chrono::Utc>, now: chrono::DateTime<chrono::Utc>) -> String {
     let elapsed = (now - last).num_seconds().max(0);
     sessions::format_duration(elapsed)
 }
@@ -131,10 +128,7 @@ fn render_sessions_table(frame: &mut Frame, app: &App, theme: &Theme, area: Rect
             let project = sessions::middle_truncate(&entry.project_name, 22);
 
             Row::new(vec![
-                Cell::from(Line::from(vec![
-                    Span::raw(" "),
-                    state_glyph(state, theme),
-                ])),
+                Cell::from(Line::from(vec![Span::raw(" "), state_glyph(state, theme)])),
                 Cell::from(entry.short_id.clone()),
                 Cell::from(project),
                 Cell::from(mode_abbrev(entry.permission_mode.as_deref())),
@@ -171,8 +165,7 @@ fn render_sessions_table(frame: &mut Frame, app: &App, theme: &Theme, area: Rect
 
     let mut state = TableState::default();
     state.select(Some(
-        app.session_index
-            .min(app.sessions.len().saturating_sub(1)),
+        app.session_index.min(app.sessions.len().saturating_sub(1)),
     ));
     frame.render_stateful_widget(table, area, &mut state);
 }
