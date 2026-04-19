@@ -93,10 +93,19 @@ Press `Tab` to switch between two modes:
 
 **Sessions mode** uses a Table + Detail layout:
 
-- **Table** — 7 columns: state glyph, short ID, project, mode, last activity, cache TTL, size
+- **Table** — 6 columns: state glyph, short ID, project, last activity, cache TTL, size
 - **Detail** — Fixed 8-row panel showing full session metadata
 
 Cache TTL is shown as a hybrid `mm:ss ████▌·····` bar with color thresholds (green > 50%, yellow 20–50%, red < 20%).
+
+### State glyph
+
+Two-state, aligned with Anthropic's 5-minute prompt-cache TTL:
+
+- `●` warm — last write within 5 min (cache likely still live on the server)
+- `○` cold — last write older than 5 min (cache expired; resuming pays a miss)
+
+duru cannot tell from disk alone whether a session's Claude Code process is still running. `/clear`, `/exit`, or a killed terminal leave the transcript file on disk and duru classifies it only by mtime.
 
 ## Theme
 

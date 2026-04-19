@@ -9,35 +9,6 @@ use chrono::{DateTime, Utc};
 use crate::scan::decode_project_name;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PermissionMode {
-    Auto,
-    Default,
-    AcceptEdits,
-    Other(String),
-}
-
-impl PermissionMode {
-    pub fn parse(raw: &str) -> Self {
-        match raw {
-            "auto" => Self::Auto,
-            "default" => Self::Default,
-            "acceptEdits" => Self::AcceptEdits,
-            other => Self::Other(other.to_string()),
-        }
-    }
-
-    /// Short label for the Sessions-table `Mode` column (max 7 chars).
-    pub fn abbrev(&self) -> &str {
-        match self {
-            Self::Auto => "auto",
-            Self::Default => "default",
-            Self::AcceptEdits => "accept",
-            Self::Other(_) => "other",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionEntry {
     pub session_id: String,
     pub short_id: String,
@@ -46,15 +17,15 @@ pub struct SessionEntry {
     pub transcript_path: PathBuf,
     pub started_at: Option<DateTime<Utc>>,
     pub last_activity: DateTime<Utc>,
-    pub permission_mode: Option<PermissionMode>,
-    pub has_termination_record: bool,
     pub file_size: u64,
 }
 
+/// Two-state model aligned with Anthropic's 5-minute prompt cache TTL:
+/// either the cache is warm (last write within window) or it's cold.
+/// A middle "Idle" grade would be misleading — the cache doesn't have one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum State {
     Active,
-    Idle,
     Stale,
 }
 
@@ -82,8 +53,6 @@ pub fn format_duration(secs: i64) -> String {
 }
 
 pub fn format_bytes(bytes: u64) -> String {
-    // Binary units (K = 1024, M = 1024²) to match ui::format_size so a file
-    // shown in both Memory and Sessions modes displays the same size.
     if bytes < 1024 {
         format!("{}B", bytes)
     } else if bytes < 1024 * 1024 {
@@ -108,30 +77,29 @@ pub fn middle_truncate(s: &str, max: usize) -> String {
 /// Anthropic's default prompt cache TTL in seconds (5 minutes).
 ///
 /// Canonical source; `ui::render_ttl_cell` imports it as the bar denominator.
-/// The `State::Active` window is aligned with this value so "Active" visually
+/// The `State::Active` window is aligned with this value so the glyph visually
 /// signals "cache likely still warm".
 pub const TTL_SECS: i64 = 300;
 
-/// Boundary between `State::Idle` and `State::Stale` (1 hour).
-pub(crate) const IDLE_CUTOFF_SECS: i64 = 3600;
-
-/// First N lines of a transcript scanned to extract session_id / permission /
-/// started_at / cwd. Enough to skip past `file-history-snapshot` records
-/// that sometimes precede the `permission-mode` row.
+/// First N lines of a transcript scanned to extract session_id, started_at,
+/// and cwd. Enough to skip past `file-history-snapshot` records that sometimes
+/// precede the first real record.
 const FIRST_RECORD_SCAN_LINES: usize = 10;
 
 /// Short-form session ID length (first N chars of the UUID).
 const SHORT_ID_LEN: usize = 8;
 
+/// Sessions with mtime older than this skip the JSONL open/parse entirely on
+/// discovery. Their rows show correctly as Stale from metadata alone
+/// (filename → id, directory → project, mtime → last_activity, stat → size),
+/// but started_at and cwd render as "—". Dramatically cuts cold-boot time
+/// when `~/.claude/projects` has thousands of historical transcripts.
+const LAZY_PARSE_CUTOFF_SECS: i64 = 86_400; // 24 h
+
 pub fn state_at(entry: &SessionEntry, now: DateTime<Utc>) -> State {
-    if entry.has_termination_record {
-        return State::Stale;
-    }
     let elapsed = (now - entry.last_activity).num_seconds();
     if elapsed < TTL_SECS {
         State::Active
-    } else if elapsed < IDLE_CUTOFF_SECS {
-        State::Idle
     } else {
         State::Stale
     }
@@ -145,7 +113,6 @@ pub fn cache_ttl_remaining_secs(entry: &SessionEntry, now: DateTime<Utc>) -> i64
 #[derive(Debug, Default, Clone)]
 pub struct FirstRecord {
     pub session_id: Option<String>,
-    pub permission_mode: Option<PermissionMode>,
     pub started_at: Option<DateTime<Utc>>,
     pub cwd: Option<String>,
 }
@@ -170,12 +137,6 @@ pub fn parse_first_record<R: Read>(reader: R) -> FirstRecord {
         {
             out.session_id = Some(sid.to_string());
         }
-        if out.permission_mode.is_none()
-            && value.get("type").and_then(|v| v.as_str()) == Some("permission-mode")
-            && let Some(mode) = value.get("permissionMode").and_then(|v| v.as_str())
-        {
-            out.permission_mode = Some(PermissionMode::parse(mode));
-        }
         if out.started_at.is_none()
             && let Some(ts) = value.get("timestamp").and_then(|v| v.as_str())
             && let Ok(dt) = DateTime::parse_from_rfc3339(ts)
@@ -187,11 +148,7 @@ pub fn parse_first_record<R: Read>(reader: R) -> FirstRecord {
         {
             out.cwd = Some(cwd.to_string());
         }
-        if out.session_id.is_some()
-            && out.permission_mode.is_some()
-            && out.started_at.is_some()
-            && out.cwd.is_some()
-        {
+        if out.session_id.is_some() && out.started_at.is_some() && out.cwd.is_some() {
             break;
         }
     }
@@ -203,7 +160,6 @@ const TAIL_CHUNK_BYTES: u64 = 8192;
 #[derive(Debug, Default, Clone)]
 pub struct TailRecord {
     pub last_activity: Option<DateTime<Utc>>,
-    pub has_termination_record: bool,
 }
 
 pub fn parse_tail(path: &Path) -> std::io::Result<TailRecord> {
@@ -234,9 +190,6 @@ pub fn parse_tail(path: &Path) -> std::io::Result<TailRecord> {
         let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
             continue;
         };
-        if value.get("type").and_then(|v| v.as_str()) == Some("last-prompt") {
-            out.has_termination_record = true;
-        }
         if let Some(ts) = value.get("timestamp").and_then(|v| v.as_str())
             && let Ok(dt) = DateTime::parse_from_rfc3339(ts)
         {
@@ -321,30 +274,44 @@ fn walk_session_files(claude_dir: &Path) -> Vec<(PathBuf, SystemTime)> {
 }
 
 fn parse_session(path: &Path) -> Option<SessionEntry> {
+    parse_session_at(path, Utc::now())
+}
+
+fn parse_session_at(path: &Path, now: DateTime<Utc>) -> Option<SessionEntry> {
     let meta = path.metadata().ok()?;
     let mtime_sys = meta.modified().ok()?;
     let mtime = DateTime::<Utc>::from(mtime_sys);
-
-    let file = File::open(path).ok()?;
-    let first = parse_first_record(file);
-    let tail = parse_tail(path).ok()?;
 
     let filename_uuid = path
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("")
         .to_string();
-    let session_id = first.session_id.unwrap_or_else(|| filename_uuid.clone());
-    let short = short_id(&session_id);
-
     let project_dir_name = path
         .parent()
         .and_then(|p| p.file_name())
         .and_then(|n| n.to_str())
         .unwrap_or("")
         .to_string();
-    let project_name = decode_project_name(&project_dir_name).unwrap_or(project_dir_name);
+    let project_name =
+        decode_project_name(&project_dir_name).unwrap_or_else(|| project_dir_name.clone());
 
+    // Lazy parse: for files older than the cutoff, skip opening the file.
+    // The row still renders correctly as Stale — only started_at and cwd are
+    // unknown ("—" in the detail panel), which is a reasonable tradeoff for
+    // the 5-10x cold-scan speedup on setups with thousands of historical
+    // transcripts.
+    let (first, tail) = if (now - mtime).num_seconds() > LAZY_PARSE_CUTOFF_SECS {
+        (FirstRecord::default(), TailRecord::default())
+    } else {
+        let file = File::open(path).ok()?;
+        let first = parse_first_record(file);
+        let tail = parse_tail(path).unwrap_or_default();
+        (first, tail)
+    };
+
+    let session_id = first.session_id.unwrap_or_else(|| filename_uuid.clone());
+    let short = short_id(&session_id);
     let last_activity = tail.last_activity.unwrap_or(mtime);
 
     Some(SessionEntry {
@@ -355,8 +322,6 @@ fn parse_session(path: &Path) -> Option<SessionEntry> {
         transcript_path: path.to_path_buf(),
         started_at: first.started_at,
         last_activity,
-        permission_mode: first.permission_mode,
-        has_termination_record: tail.has_termination_record,
         file_size: meta.len(),
     })
 }
@@ -373,62 +338,44 @@ fn scan_sessions(claude_dir: &Path) -> Vec<SessionEntry> {
 
 pub fn demo_sessions() -> Vec<SessionEntry> {
     let now = Utc::now();
-    let make =
-        |id: &str, project: &str, secs_ago: i64, last_prompt: bool, size: u64, mode: &str| {
-            let last_activity = now - chrono::Duration::seconds(secs_ago);
-            SessionEntry {
-                session_id: id.to_string(),
-                short_id: short_id(id),
-                project_name: project.to_string(),
-                cwd: Some(PathBuf::from(format!("/Users/demo/{project}"))),
-                transcript_path: PathBuf::from(format!("/tmp/duru-demo/{id}.jsonl")),
-                started_at: Some(last_activity - chrono::Duration::minutes(15)),
-                last_activity,
-                permission_mode: Some(PermissionMode::parse(mode)),
-                has_termination_record: last_prompt,
-                file_size: size,
-            }
-        };
+    let make = |id: &str, project: &str, secs_ago: i64, size: u64| {
+        let last_activity = now - chrono::Duration::seconds(secs_ago);
+        SessionEntry {
+            session_id: id.to_string(),
+            short_id: short_id(id),
+            project_name: project.to_string(),
+            cwd: Some(PathBuf::from(format!("/Users/demo/{project}"))),
+            transcript_path: PathBuf::from(format!("/tmp/duru-demo/{id}.jsonl")),
+            started_at: Some(last_activity - chrono::Duration::minutes(15)),
+            last_activity,
+            file_size: size,
+        }
+    };
     vec![
         make(
             "676b2e79-2ee5-4a7b-8cd3-2a5034cac2e6",
             "my-webapp",
             12,
-            false,
             234_000,
-            "auto",
         ),
-        make(
-            "a3f1e2d4-1234-1234-1234-123456789abc",
-            "duru",
-            120,
-            false,
-            187_000,
-            "auto",
-        ),
+        make("a3f1e2d4-1234-1234-1234-123456789abc", "duru", 120, 187_000),
         make(
             "b9e73dca-aefb-4a83-88f8-4534127e6281",
             "namuldogam",
             240,
-            false,
             92_000,
-            "default",
         ),
         make(
             "90515568-bd14-4207-a9f5-2bc9d59973e7",
             "chrome-secret",
             1080,
-            false,
             412_000,
-            "auto",
         ),
         make(
             "f3bc49c4-5db3-4e09-8f60-de8c87654f6b",
             "rust-playground",
-            3600,
-            true,
+            7200,
             1_200_000,
-            "default",
         ),
     ]
 }
@@ -522,11 +469,7 @@ mod tests {
         assert_eq!(middle_truncate("my-very-long-project", 10), "my-v…ject");
     }
 
-    fn make_entry(
-        id: &str,
-        last_activity: DateTime<Utc>,
-        has_termination_record: bool,
-    ) -> SessionEntry {
+    fn make_entry(id: &str, last_activity: DateTime<Utc>) -> SessionEntry {
         SessionEntry {
             session_id: id.to_string(),
             short_id: short_id(id),
@@ -535,8 +478,6 @@ mod tests {
             transcript_path: PathBuf::from(format!("/tmp/{id}.jsonl")),
             started_at: Some(last_activity),
             last_activity,
-            permission_mode: Some(PermissionMode::Auto),
-            has_termination_record,
             file_size: 1000,
         }
     }
@@ -544,56 +485,28 @@ mod tests {
     #[test]
     fn state_at_active_when_recent() {
         let now = Utc::now();
-        let entry = make_entry("a", now - chrono::Duration::seconds(30), false);
+        let entry = make_entry("a", now - chrono::Duration::seconds(30));
         assert_eq!(state_at(&entry, now), State::Active);
-    }
-
-    #[test]
-    fn state_at_idle_when_medium() {
-        let now = Utc::now();
-        let entry = make_entry("b", now - chrono::Duration::minutes(10), false);
-        assert_eq!(state_at(&entry, now), State::Idle);
     }
 
     #[test]
     fn state_at_stale_when_old() {
         let now = Utc::now();
-        let entry = make_entry("c", now - chrono::Duration::hours(2), false);
-        assert_eq!(state_at(&entry, now), State::Stale);
-    }
-
-    #[test]
-    fn state_at_stale_when_last_prompt_present() {
-        let now = Utc::now();
-        let entry = make_entry("d", now - chrono::Duration::seconds(10), true);
+        let entry = make_entry("c", now - chrono::Duration::hours(2));
         assert_eq!(state_at(&entry, now), State::Stale);
     }
 
     #[test]
     fn state_at_active_just_under_300s() {
         let now = Utc::now();
-        let entry = make_entry("e", now - chrono::Duration::seconds(299), false);
+        let entry = make_entry("e", now - chrono::Duration::seconds(299));
         assert_eq!(state_at(&entry, now), State::Active);
     }
 
     #[test]
-    fn state_at_idle_at_exactly_300s() {
+    fn state_at_stale_at_exactly_300s() {
         let now = Utc::now();
-        let entry = make_entry("f", now - chrono::Duration::seconds(300), false);
-        assert_eq!(state_at(&entry, now), State::Idle);
-    }
-
-    #[test]
-    fn state_at_idle_just_under_3600s() {
-        let now = Utc::now();
-        let entry = make_entry("g", now - chrono::Duration::seconds(3599), false);
-        assert_eq!(state_at(&entry, now), State::Idle);
-    }
-
-    #[test]
-    fn state_at_stale_at_exactly_3600s() {
-        let now = Utc::now();
-        let entry = make_entry("h", now - chrono::Duration::seconds(3600), false);
+        let entry = make_entry("f", now - chrono::Duration::seconds(300));
         assert_eq!(state_at(&entry, now), State::Stale);
     }
 
@@ -601,9 +514,9 @@ mod tests {
     fn sort_by_last_activity_desc() {
         let now = Utc::now();
         let mut entries = vec![
-            make_entry("old", now - chrono::Duration::minutes(10), false),
-            make_entry("new", now - chrono::Duration::seconds(5), false),
-            make_entry("mid", now - chrono::Duration::minutes(2), false),
+            make_entry("old", now - chrono::Duration::minutes(10)),
+            make_entry("new", now - chrono::Duration::seconds(5)),
+            make_entry("mid", now - chrono::Duration::minutes(2)),
         ];
         sort_entries(&mut entries, SessionsSort::LastActivity, now);
         assert_eq!(entries[0].session_id, "new");
@@ -615,9 +528,9 @@ mod tests {
     fn sort_by_cache_ttl_asc_expiring_first() {
         let now = Utc::now();
         let mut entries = vec![
-            make_entry("fresh", now - chrono::Duration::seconds(10), false),
-            make_entry("expiring", now - chrono::Duration::seconds(270), false),
-            make_entry("middle", now - chrono::Duration::seconds(120), false),
+            make_entry("fresh", now - chrono::Duration::seconds(10)),
+            make_entry("expiring", now - chrono::Duration::seconds(270)),
+            make_entry("middle", now - chrono::Duration::seconds(120)),
         ];
         sort_entries(&mut entries, SessionsSort::CacheTtl, now);
         assert_eq!(entries[0].session_id, "expiring");
@@ -629,9 +542,9 @@ mod tests {
     fn sort_by_project_alphabetical() {
         let now = Utc::now();
         let mut entries = vec![
-            make_entry("c", now, false),
-            make_entry("a", now, false),
-            make_entry("b", now, false),
+            make_entry("c", now),
+            make_entry("a", now),
+            make_entry("b", now),
         ];
         sort_entries(&mut entries, SessionsSort::Project, now);
         assert_eq!(entries[0].session_id, "a");
@@ -719,17 +632,6 @@ mod tests {
             parsed.last_activity.map(|d| d.to_rfc3339()),
             Some("2026-04-19T06:10:00+00:00".to_string())
         );
-        assert!(!parsed.has_termination_record);
-    }
-
-    #[test]
-    fn parse_tail_detects_last_prompt_record() {
-        let file = tempfile_with(&[
-            r#"{"type":"user","timestamp":"2026-04-19T06:00:00Z","sessionId":"x"}"#,
-            r#"{"type":"last-prompt","timestamp":"2026-04-19T06:10:00Z","lastPrompt":"bye"}"#,
-        ]);
-        let parsed = parse_tail(file.path()).unwrap();
-        assert!(parsed.has_termination_record);
     }
 
     #[test]
@@ -737,7 +639,6 @@ mod tests {
         let file = tempfile::NamedTempFile::new().unwrap();
         let parsed = parse_tail(file.path()).unwrap();
         assert!(parsed.last_activity.is_none());
-        assert!(!parsed.has_termination_record);
     }
 
     #[test]
@@ -752,25 +653,19 @@ mod tests {
 
     #[test]
     fn parse_tail_reads_tail_of_large_file() {
-        // Regression test for PR #8 double-BufReader bug: when file exceeds
+        // Regression test for the double-BufReader bug: when file exceeds
         // TAIL_CHUNK_BYTES (8 KiB), the old impl read nothing because the
         // first BufReader drained the file to EOF.
         let mut f = tempfile::NamedTempFile::new().unwrap();
-        // Write ~9 KiB of noise lines (200 × ~47 bytes each), then a
-        // last-prompt record at the very end.
         for _ in 0..200 {
             writeln!(f, "{}", "x".repeat(46)).unwrap();
         }
         writeln!(
             f,
-            r#"{{"type":"last-prompt","timestamp":"2026-04-19T08:00:00Z","lastPrompt":"bye"}}"#
+            r#"{{"type":"user","timestamp":"2026-04-19T08:00:00Z","sessionId":"x"}}"#
         )
         .unwrap();
         let parsed = parse_tail(f.path()).unwrap();
-        assert!(
-            parsed.has_termination_record,
-            "last-prompt record at end of large file must be detected"
-        );
         assert!(
             parsed.last_activity.is_some(),
             "last_activity must be parsed from the tail even for large files"
@@ -778,14 +673,13 @@ mod tests {
     }
 
     #[test]
-    fn parse_first_record_extracts_session_id_from_permission_mode() {
+    fn parse_first_record_extracts_session_id() {
         let content = r#"{"type":"permission-mode","permissionMode":"auto","sessionId":"676b2e79-2ee5-4a7b-8cd3-2a5034cac2e6"}"#;
         let parsed = parse_first_record(content.as_bytes());
         assert_eq!(
             parsed.session_id.as_deref(),
             Some("676b2e79-2ee5-4a7b-8cd3-2a5034cac2e6")
         );
-        assert_eq!(parsed.permission_mode, Some(PermissionMode::Auto));
     }
 
     #[test]
@@ -798,14 +692,11 @@ mod tests {
         );
         let parsed = parse_first_record(content.as_bytes());
         assert_eq!(parsed.session_id.as_deref(), Some("abc123"));
-        assert_eq!(parsed.permission_mode, Some(PermissionMode::Default));
     }
 
     #[test]
     fn parse_first_record_extracts_timestamp_and_cwd_from_user_record() {
         let content = concat!(
-            r#"{"type":"permission-mode","permissionMode":"auto","sessionId":"x1"}"#,
-            "\n",
             r#"{"type":"user","timestamp":"2026-04-19T06:26:01.121Z","cwd":"/Users/kim/proj","sessionId":"x1"}"#,
             "\n",
         );
@@ -819,7 +710,6 @@ mod tests {
         let content = "not valid json\n";
         let parsed = parse_first_record(content.as_bytes());
         assert!(parsed.session_id.is_none());
-        assert!(parsed.permission_mode.is_none());
     }
 
     #[test]
@@ -832,9 +722,9 @@ mod tests {
     fn sort_by_size_desc() {
         let now = Utc::now();
         let mut entries = vec![
-            make_entry("small", now, false),
-            make_entry("big", now, false),
-            make_entry("mid", now, false),
+            make_entry("small", now),
+            make_entry("big", now),
+            make_entry("mid", now),
         ];
         entries[0].file_size = 100;
         entries[1].file_size = 10_000;

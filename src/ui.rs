@@ -11,7 +11,7 @@ use ratatui::{
 
 use crate::app::{App, AppMode, Pane, SessionsPane};
 use crate::markdown;
-use crate::sessions::{self, PermissionMode, State};
+use crate::sessions::{self, State};
 use crate::theme::Theme;
 
 pub fn render(frame: &mut Frame, app: &App, theme: &Theme) {
@@ -61,15 +61,7 @@ fn render_sessions_layout(frame: &mut Frame, app: &App, theme: &Theme, area: Rec
 fn state_glyph(state: State, theme: &Theme) -> Span<'static> {
     match state {
         State::Active => Span::styled("●", Style::default().fg(theme.pine)),
-        State::Idle => Span::styled("◐", Style::default().fg(theme.muted)),
-        State::Stale => Span::styled("○", Style::default().fg(theme.overlay)),
-    }
-}
-
-fn mode_abbrev(mode: Option<&PermissionMode>) -> &str {
-    match mode {
-        Some(m) => m.abbrev(),
-        None => "—",
+        State::Stale => Span::styled("○", Style::default().fg(theme.muted)),
     }
 }
 
@@ -82,20 +74,14 @@ fn render_sessions_table(frame: &mut Frame, app: &App, theme: &Theme, area: Rect
     let focused = app.sessions_focus == SessionsPane::Table;
     let now = chrono::Utc::now();
 
-    // One pass: compute per-entry state once; reuse for both the header
-    // counts and the row rendering. state_at is cheap but it's in the
-    // 100ms draw hot path × N rows × 3 callsites — collapse to one.
     let states: Vec<State> = app
         .sessions
         .iter()
         .map(|e| sessions::state_at(e, now))
         .collect();
-    let (active, idle) = states.iter().fold((0usize, 0usize), |(a, i), s| match s {
-        State::Active => (a + 1, i),
-        State::Idle => (a, i + 1),
-        State::Stale => (a, i),
-    });
-    let title = format!("Sessions ({} active · {} idle)", active, idle);
+    let warm = states.iter().filter(|s| **s == State::Active).count();
+    let cold = states.iter().filter(|s| **s == State::Stale).count();
+    let title = format!("Sessions ({} warm · {} cold)", warm, cold);
     let block = pane_block(&title, focused, theme);
 
     if app.sessions.is_empty() {
@@ -107,17 +93,9 @@ fn render_sessions_table(frame: &mut Frame, app: &App, theme: &Theme, area: Rect
         return;
     }
 
-    let header = Row::new(vec![
-        "",
-        "ID",
-        "Project",
-        "Mode",
-        "Last",
-        "Cache TTL",
-        "Size",
-    ])
-    .style(Style::default().fg(theme.text).add_modifier(Modifier::BOLD))
-    .bottom_margin(1);
+    let header = Row::new(vec!["", "ID", "Project", "Last", "Cache TTL", "Size"])
+        .style(Style::default().fg(theme.text).add_modifier(Modifier::BOLD))
+        .bottom_margin(1);
 
     let rows: Vec<Row> = app
         .sessions
@@ -126,8 +104,7 @@ fn render_sessions_table(frame: &mut Frame, app: &App, theme: &Theme, area: Rect
         .map(|(entry, &state)| {
             let row_fg = match state {
                 State::Active => theme.text,
-                State::Idle => theme.muted,
-                State::Stale => theme.overlay,
+                State::Stale => theme.muted,
             };
             let remaining = sessions::cache_ttl_remaining_secs(entry, now);
             let project = sessions::middle_truncate(&entry.project_name, PROJECT_NAME_MAX_WIDTH);
@@ -136,7 +113,6 @@ fn render_sessions_table(frame: &mut Frame, app: &App, theme: &Theme, area: Rect
                 Cell::from(Line::from(vec![Span::raw(" "), state_glyph(state, theme)])),
                 Cell::from(entry.short_id.clone()),
                 Cell::from(project),
-                Cell::from(mode_abbrev(entry.permission_mode.as_ref()).to_string()),
                 Cell::from(relative_age(entry.last_activity, now)),
                 render_ttl_cell(remaining, theme),
                 Cell::from(sessions::format_bytes(entry.file_size)),
@@ -149,7 +125,6 @@ fn render_sessions_table(frame: &mut Frame, app: &App, theme: &Theme, area: Rect
         Constraint::Length(3),
         Constraint::Length(8),
         Constraint::Min(20),
-        Constraint::Length(9),
         Constraint::Length(8),
         Constraint::Length(14),
         Constraint::Length(7),
@@ -211,7 +186,6 @@ fn render_sessions_detail(frame: &mut Frame, app: &App, theme: &Theme, area: Rec
         .unwrap_or_else(|| "—".to_string());
 
     let last_str = relative_age(entry.last_activity, now);
-    let mode_str = mode_abbrev(entry.permission_mode.as_ref()).to_string();
 
     let lines = vec![
         Line::from(vec![
@@ -233,9 +207,7 @@ fn render_sessions_detail(frame: &mut Frame, app: &App, theme: &Theme, area: Rec
             Span::raw(last_str),
         ]),
         Line::from(vec![
-            Span::styled("Mode:       ", Style::default().fg(theme.muted)),
-            Span::raw(mode_str),
-            Span::styled("    TTL: ", Style::default().fg(theme.muted)),
+            Span::styled("TTL:        ", Style::default().fg(theme.muted)),
             Span::styled(ttl_text, Style::default().fg(ttl_color)),
         ]),
         Line::from(vec![
