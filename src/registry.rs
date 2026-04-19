@@ -53,18 +53,22 @@ impl Registry {
         Self::default()
     }
 
+    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.by_session_id.len()
     }
 
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.by_session_id.is_empty()
     }
 
+    #[allow(dead_code)]
     pub fn entries(&self) -> impl Iterator<Item = &RegistryEntry> {
         self.by_session_id.values()
     }
 
+    #[allow(dead_code)]
     pub fn get_by_session_id(&self, sid: &str) -> Option<&RegistryEntry> {
         self.by_session_id.get(sid)
     }
@@ -95,7 +99,9 @@ impl Registry {
             if !parsed.terminated {
                 continue;
             }
-            let Some(ended) = parsed.ended_at else { continue };
+            let Some(ended) = parsed.ended_at else {
+                continue;
+            };
             let age = (now - ended).num_seconds();
             if age > TERMINATED_TTL_SECS {
                 let _ = fs::remove_file(&path);
@@ -359,7 +365,11 @@ mod tests {
             permission_mode: Some("auto".to_string()),
             terminated,
             ended_at: if terminated { Some(now) } else { None },
-            end_reason: if terminated { Some("other".to_string()) } else { None },
+            end_reason: if terminated {
+                Some("other".to_string())
+            } else {
+                None
+            },
         }
     }
 

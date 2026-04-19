@@ -105,7 +105,13 @@ fn render_sessions_table(frame: &mut Frame, app: &App, theme: &Theme, area: Rect
     }
 
     let header = Row::new(vec![
-        "", "ID", "Project", "Mode", "Last", "Cache TTL", "Size",
+        "",
+        "ID",
+        "Project",
+        "Mode",
+        "Last",
+        "Cache TTL",
+        "Size",
     ])
     .style(Style::default().fg(theme.text).add_modifier(Modifier::BOLD))
     .bottom_margin(1);

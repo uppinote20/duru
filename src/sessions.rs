@@ -260,9 +260,7 @@ pub(crate) fn dedup_same_pid(
                 (Some(a), Some(b)) => (a - b).num_seconds().abs() < 60,
                 _ => true,
             };
-            if close_enough
-                && let Some((e, _)) = entries.get_mut(p)
-            {
+            if close_enough && let Some((e, _)) = entries.get_mut(p) {
                 e.registry_source = Some(RegistrySource::Terminated);
             }
         }

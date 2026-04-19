@@ -144,11 +144,7 @@ fn merge_settings(home: &Path) -> std::io::Result<()> {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()?;
-    child
-        .stdin
-        .as_mut()
-        .unwrap()
-        .write_all(input.as_bytes())?;
+    child.stdin.as_mut().unwrap().write_all(input.as_bytes())?;
     let result = child.wait_with_output()?;
 
     if !result.status.success() {
@@ -233,6 +229,7 @@ fn try_star() {
 pub struct StatusReport {
     pub installed: bool,
     pub events_present: Vec<String>,
+    #[allow(dead_code)]
     pub events_missing: Vec<String>,
     pub registry_alive: usize,
     pub registry_terminated: usize,

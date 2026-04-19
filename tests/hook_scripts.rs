@@ -103,9 +103,10 @@ fn user_prompt_updates_heartbeat_preserves_other_fields() {
         "source": "startup"
     }"#;
     run_hook(&start_sh, start_payload, home.path());
-    let path = home.path().join(".claude/duru/registry/heartbeat-test.json");
-    let before: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let path = home
+        .path()
+        .join(".claude/duru/registry/heartbeat-test.json");
+    let before: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     let started = before["started_at"].clone();
     let pid = before["pid"].clone();
 

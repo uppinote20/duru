@@ -28,7 +28,11 @@ use scan::{demo_projects, scan_claude_dir};
 use theme::Theme;
 
 #[derive(Parser)]
-#[command(name = "duru", version, about = "Claude Code memory and sessions dashboard")]
+#[command(
+    name = "duru",
+    version,
+    about = "Claude Code memory and sessions dashboard"
+)]
 struct Cli {
     /// Force color theme (dark or light)
     #[arg(long)]
@@ -112,10 +116,9 @@ fn run_hooks_command(home: &std::path::Path, action: HooksAction) -> io::Result<
                 force_star_prompt,
             },
         ),
-        HooksAction::Uninstall { dry_run, force } => hooks_install::uninstall(
-            home,
-            &hooks_install::UninstallOpts { dry_run, force },
-        ),
+        HooksAction::Uninstall { dry_run, force } => {
+            hooks_install::uninstall(home, &hooks_install::UninstallOpts { dry_run, force })
+        }
         HooksAction::Status => {
             let report = hooks_install::status(home)?;
             hooks_install::print_status(&report);
