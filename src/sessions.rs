@@ -1,3 +1,4 @@
+use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
@@ -90,6 +91,58 @@ pub fn state_at(entry: &SessionEntry, now: DateTime<Utc>) -> State {
 pub fn cache_ttl_remaining_secs(entry: &SessionEntry, now: DateTime<Utc>) -> i64 {
     let elapsed = (now - entry.last_activity).num_seconds();
     (300 - elapsed).max(0)
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct FirstRecord {
+    pub session_id: Option<String>,
+    pub permission_mode: Option<String>,
+    pub started_at: Option<DateTime<Utc>>,
+    pub cwd: Option<String>,
+}
+
+pub fn parse_first_record<R: Read>(reader: R) -> FirstRecord {
+    let buf = BufReader::new(reader);
+    let mut out = FirstRecord::default();
+
+    for line in buf.lines().take(10).flatten() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
+            continue;
+        };
+        if out.session_id.is_none()
+            && let Some(sid) = value.get("sessionId").and_then(|v| v.as_str())
+        {
+            out.session_id = Some(sid.to_string());
+        }
+        if out.permission_mode.is_none()
+            && value.get("type").and_then(|v| v.as_str()) == Some("permission-mode")
+            && let Some(mode) = value.get("permissionMode").and_then(|v| v.as_str())
+        {
+            out.permission_mode = Some(mode.to_string());
+        }
+        if out.started_at.is_none()
+            && let Some(ts) = value.get("timestamp").and_then(|v| v.as_str())
+            && let Ok(dt) = DateTime::parse_from_rfc3339(ts)
+        {
+            out.started_at = Some(dt.with_timezone(&Utc));
+        }
+        if out.cwd.is_none()
+            && let Some(cwd) = value.get("cwd").and_then(|v| v.as_str())
+        {
+            out.cwd = Some(cwd.to_string());
+        }
+        if out.session_id.is_some()
+            && out.permission_mode.is_some()
+            && out.started_at.is_some()
+            && out.cwd.is_some()
+        {
+            break;
+        }
+    }
+    out
 }
 
 pub fn sort_entries(entries: &mut [SessionEntry], sort: SessionsSort, now: DateTime<Utc>) {
@@ -254,6 +307,57 @@ mod tests {
         sort_entries(&mut entries, SessionsSort::Project, now);
         assert_eq!(entries[0].session_id, "a");
         assert_eq!(entries[2].session_id, "c");
+    }
+
+    #[test]
+    fn parse_first_record_extracts_session_id_from_permission_mode() {
+        let content = r#"{"type":"permission-mode","permissionMode":"auto","sessionId":"676b2e79-2ee5-4a7b-8cd3-2a5034cac2e6"}"#;
+        let parsed = parse_first_record(content.as_bytes());
+        assert_eq!(
+            parsed.session_id.as_deref(),
+            Some("676b2e79-2ee5-4a7b-8cd3-2a5034cac2e6")
+        );
+        assert_eq!(parsed.permission_mode.as_deref(), Some("auto"));
+    }
+
+    #[test]
+    fn parse_first_record_scans_past_file_history_snapshot() {
+        let content = concat!(
+            r#"{"type":"file-history-snapshot","entries":[]}"#,
+            "\n",
+            r#"{"type":"permission-mode","permissionMode":"default","sessionId":"abc123"}"#,
+            "\n",
+        );
+        let parsed = parse_first_record(content.as_bytes());
+        assert_eq!(parsed.session_id.as_deref(), Some("abc123"));
+        assert_eq!(parsed.permission_mode.as_deref(), Some("default"));
+    }
+
+    #[test]
+    fn parse_first_record_extracts_timestamp_and_cwd_from_user_record() {
+        let content = concat!(
+            r#"{"type":"permission-mode","permissionMode":"auto","sessionId":"x1"}"#,
+            "\n",
+            r#"{"type":"user","timestamp":"2026-04-19T06:26:01.121Z","cwd":"/Users/kim/proj","sessionId":"x1"}"#,
+            "\n",
+        );
+        let parsed = parse_first_record(content.as_bytes());
+        assert!(parsed.started_at.is_some());
+        assert_eq!(parsed.cwd.as_deref(), Some("/Users/kim/proj"));
+    }
+
+    #[test]
+    fn parse_first_record_returns_empty_on_invalid_json() {
+        let content = "not valid json\n";
+        let parsed = parse_first_record(content.as_bytes());
+        assert!(parsed.session_id.is_none());
+        assert!(parsed.permission_mode.is_none());
+    }
+
+    #[test]
+    fn parse_first_record_handles_empty_input() {
+        let parsed = parse_first_record(b"" as &[u8]);
+        assert!(parsed.session_id.is_none());
     }
 
     #[test]
