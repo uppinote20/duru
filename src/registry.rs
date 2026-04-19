@@ -39,3 +39,40 @@ pub enum RegistrySource {
     Alive,
     Terminated,
 }
+
+/// Returns true if a process with `pid` currently exists.
+/// Uses `kill(pid, 0)` — zero signal means "check only, don't deliver".
+/// `EPERM` (process exists but not ours to signal) also counts as alive.
+pub fn is_pid_alive(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    let pid_t = pid as libc::pid_t;
+    let rc = unsafe { libc::kill(pid_t, 0) };
+    if rc == 0 {
+        return true;
+    }
+    let err = std::io::Error::last_os_error().raw_os_error();
+    err == Some(libc::EPERM)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_pid_alive_returns_true_for_current_process() {
+        let own_pid = std::process::id();
+        assert!(is_pid_alive(own_pid));
+    }
+
+    #[test]
+    fn is_pid_alive_returns_false_for_impossible_pid() {
+        assert!(!is_pid_alive(4_000_000));
+    }
+
+    #[test]
+    fn is_pid_alive_for_zero_returns_false() {
+        assert!(!is_pid_alive(0));
+    }
+}
