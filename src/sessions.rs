@@ -156,19 +156,26 @@ pub struct TailRecord {
 pub fn parse_tail(path: &Path) -> std::io::Result<TailRecord> {
     let mut file = File::open(path)?;
     let file_len = file.metadata()?.len();
+    let skip_first = file_len > TAIL_CHUNK_BYTES;
 
-    if file_len > TAIL_CHUNK_BYTES {
+    if skip_first {
         file.seek(SeekFrom::End(-(TAIL_CHUNK_BYTES as i64)))?;
-        // Drop potentially-partial first line after seek
-        let mut discard = String::new();
-        let mut reader = BufReader::new(&mut file);
-        let _ = reader.read_line(&mut discard);
     }
 
     let mut out = TailRecord::default();
-    let buf = BufReader::new(file);
+    let reader = BufReader::new(file);
+    let mut lines = reader.lines().map_while(Result::ok);
 
-    for line in buf.lines().map_while(Result::ok) {
+    // When we seeked into the middle of the file, the first line is likely a
+    // partial record — discard it. Using a single BufReader here is critical:
+    // `BufReader::new(&mut file)` would fill its internal 8 KiB buffer in one
+    // `read()` syscall, advancing the OS file position to EOF; a subsequent
+    // BufReader on the same file would then read nothing. See PR #8 review.
+    if skip_first {
+        lines.next();
+    }
+
+    for line in lines {
         if line.trim().is_empty() {
             continue;
         }
@@ -641,6 +648,33 @@ mod tests {
         ]);
         let parsed = parse_tail(file.path()).unwrap();
         assert!(parsed.last_activity.is_some());
+    }
+
+    #[test]
+    fn parse_tail_reads_tail_of_large_file() {
+        // Regression test for PR #8 double-BufReader bug: when file exceeds
+        // TAIL_CHUNK_BYTES (8 KiB), the old impl read nothing because the
+        // first BufReader drained the file to EOF.
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        // Write ~9 KiB of noise lines (200 × ~47 bytes each), then a
+        // last-prompt record at the very end.
+        for _ in 0..200 {
+            writeln!(f, "{}", "x".repeat(46)).unwrap();
+        }
+        writeln!(
+            f,
+            r#"{{"type":"last-prompt","timestamp":"2026-04-19T08:00:00Z","lastPrompt":"bye"}}"#
+        )
+        .unwrap();
+        let parsed = parse_tail(f.path()).unwrap();
+        assert!(
+            parsed.has_last_prompt,
+            "last-prompt record at end of large file must be detected"
+        );
+        assert!(
+            parsed.last_activity.is_some(),
+            "last_activity must be parsed from the tail even for large files"
+        );
     }
 
     #[test]
