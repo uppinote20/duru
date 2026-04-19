@@ -104,7 +104,28 @@ impl App {
             self.should_quit = true;
             return;
         }
-        self.handle_key_memory(key);
+        if matches!(key.code, KeyCode::Tab | KeyCode::BackTab) {
+            self.toggle_mode();
+            return;
+        }
+        match self.mode {
+            AppMode::Memory => self.handle_key_memory(key),
+            AppMode::Sessions => self.handle_key_sessions(key),
+        }
+    }
+
+    fn toggle_mode(&mut self) {
+        self.mode = match self.mode {
+            AppMode::Memory => AppMode::Sessions,
+            AppMode::Sessions => AppMode::Memory,
+        };
+        if self.mode == AppMode::Sessions && self.sessions.is_empty() && !self.skip_real_refresh {
+            self.wants_refresh = true;
+        }
+    }
+
+    fn handle_key_sessions(&mut self, _key: KeyEvent) {
+        // Filled in by Task 11
     }
 
     fn handle_key_memory(&mut self, key: KeyEvent) {
@@ -240,6 +261,39 @@ mod tests {
         assert_eq!(app.focus, Pane::Projects);
         assert_eq!(app.project_index, 0);
         assert_eq!(app.file_index, 0);
+    }
+
+    #[test]
+    fn new_app_starts_in_memory_mode() {
+        let app = App::new(make_test_projects());
+        assert_eq!(app.mode, AppMode::Memory);
+    }
+
+    #[test]
+    fn tab_key_toggles_mode() {
+        let mut app = App::new(make_test_projects());
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(app.mode, AppMode::Sessions);
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(app.mode, AppMode::Memory);
+    }
+
+    #[test]
+    fn back_tab_also_toggles_mode() {
+        let mut app = App::new(make_test_projects());
+        app.handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE));
+        assert_eq!(app.mode, AppMode::Sessions);
+    }
+
+    #[test]
+    fn toggle_preserves_memory_state() {
+        let mut app = App::new(make_test_projects());
+        app.focus = Pane::Files;
+        app.project_index = 1;
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(app.focus, Pane::Files);
+        assert_eq!(app.project_index, 1);
     }
 
     #[test]
