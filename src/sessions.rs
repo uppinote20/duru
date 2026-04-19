@@ -101,7 +101,18 @@ const SHORT_ID_LEN: usize = 8;
 /// when `~/.claude/projects` has thousands of historical transcripts.
 const LAZY_PARSE_CUTOFF_SECS: i64 = 86_400; // 24 h
 
+/// Classifies a session.
+///
+/// When a hook registry entry is available, its signals are authoritative:
+/// Terminated flag → Stale; dead pid → Stale. Otherwise falls back to the
+/// pure-mtime heuristic keyed on the 5-minute prompt-cache TTL.
 pub fn state_at(entry: &SessionEntry, now: DateTime<Utc>) -> State {
+    if let Some(RegistrySource::Terminated) = entry.registry_source {
+        return State::Stale;
+    }
+    if entry.is_alive == Some(false) {
+        return State::Stale;
+    }
     let elapsed = (now - entry.last_activity).num_seconds();
     if elapsed < TTL_SECS {
         State::Active
@@ -499,6 +510,37 @@ mod tests {
     fn state_at_active_when_recent() {
         let now = Utc::now();
         let entry = make_entry("a", now - chrono::Duration::seconds(30));
+        assert_eq!(state_at(&entry, now), State::Active);
+    }
+
+    #[test]
+    fn state_at_registry_terminated_overrides_mtime_recent() {
+        let now = Utc::now();
+        let mut entry = make_entry("x", now - chrono::Duration::seconds(30));
+        entry.registry_source = Some(RegistrySource::Terminated);
+        assert_eq!(state_at(&entry, now), State::Stale);
+    }
+
+    #[test]
+    fn state_at_registry_alive_uses_mtime() {
+        let now = Utc::now();
+        let mut entry = make_entry("x", now - chrono::Duration::seconds(30));
+        entry.registry_source = Some(RegistrySource::Alive);
+        assert_eq!(state_at(&entry, now), State::Active);
+    }
+
+    #[test]
+    fn state_at_dead_pid_overrides_mtime_recent() {
+        let now = Utc::now();
+        let mut entry = make_entry("x", now - chrono::Duration::seconds(30));
+        entry.is_alive = Some(false);
+        assert_eq!(state_at(&entry, now), State::Stale);
+    }
+
+    #[test]
+    fn state_at_no_registry_falls_back_to_mtime() {
+        let now = Utc::now();
+        let entry = make_entry("x", now - chrono::Duration::seconds(30));
         assert_eq!(state_at(&entry, now), State::Active);
     }
 
