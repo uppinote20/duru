@@ -313,6 +313,72 @@ pub fn scan_sessions(claude_dir: &Path) -> Vec<SessionEntry> {
     cache.entries()
 }
 
+pub fn demo_sessions() -> Vec<SessionEntry> {
+    let now = Utc::now();
+    let make = |id: &str,
+                project: &str,
+                secs_ago: i64,
+                last_prompt: bool,
+                size: u64,
+                mode: &str| {
+        let last_activity = now - chrono::Duration::seconds(secs_ago);
+        SessionEntry {
+            session_id: id.to_string(),
+            short_id: short_id(id),
+            project_name: project.to_string(),
+            cwd: Some(PathBuf::from(format!("/Users/demo/{project}"))),
+            transcript_path: PathBuf::from(format!("/tmp/duru-demo/{id}.jsonl")),
+            started_at: Some(last_activity - chrono::Duration::minutes(15)),
+            last_activity,
+            permission_mode: Some(mode.to_string()),
+            has_last_prompt: last_prompt,
+            file_size: size,
+        }
+    };
+    vec![
+        make(
+            "676b2e79-2ee5-4a7b-8cd3-2a5034cac2e6",
+            "my-webapp",
+            12,
+            false,
+            234_000,
+            "auto",
+        ),
+        make(
+            "a3f1e2d4-1234-1234-1234-123456789abc",
+            "duru",
+            120,
+            false,
+            187_000,
+            "auto",
+        ),
+        make(
+            "b9e73dca-aefb-4a83-88f8-4534127e6281",
+            "namuldogam",
+            240,
+            false,
+            92_000,
+            "default",
+        ),
+        make(
+            "90515568-bd14-4207-a9f5-2bc9d59973e7",
+            "chrome-secret",
+            1080,
+            false,
+            412_000,
+            "auto",
+        ),
+        make(
+            "f3bc49c4-5db3-4e09-8f60-de8c87654f6b",
+            "rust-playground",
+            3600,
+            true,
+            1_200_000,
+            "default",
+        ),
+    ]
+}
+
 pub fn sort_entries(entries: &mut [SessionEntry], sort: SessionsSort, now: DateTime<Utc>) {
     match sort {
         SessionsSort::LastActivity => {
@@ -488,6 +554,13 @@ mod tests {
     }
 
     use std::fs;
+
+    #[test]
+    fn demo_sessions_returns_five_entries() {
+        let demos = demo_sessions();
+        assert_eq!(demos.len(), 5);
+        assert!(demos.iter().any(|e| e.project_name == "my-webapp"));
+    }
 
     #[test]
     fn scan_empty_claude_dir_returns_empty() {
