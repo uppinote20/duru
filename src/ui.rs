@@ -1,9 +1,9 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, List, ListItem, Paragraph, Wrap},
+    widgets::{Block, BorderType, Borders, Cell, List, ListItem, Paragraph, Wrap},
 };
 
 use crate::app::{App, AppMode, Pane};
@@ -213,6 +213,40 @@ fn render_help_bar(frame: &mut Frame, mode: AppMode, theme: &Theme, area: Rect) 
     );
 }
 
+const TTL_BAR_WIDTH: usize = 8;
+const TTL_SECS: i64 = 300;
+
+pub(crate) fn ttl_cell_parts(remaining_secs: i64, theme: &Theme) -> (String, Color) {
+    if remaining_secs <= 0 {
+        return ("— expired".to_string(), theme.muted);
+    }
+    let mins = remaining_secs / 60;
+    let secs = remaining_secs % 60;
+    let ratio = remaining_secs as f64 / TTL_SECS as f64;
+    let filled = (ratio * TTL_BAR_WIDTH as f64).round() as usize;
+    let filled = filled.min(TTL_BAR_WIDTH);
+    let color = if ratio > 0.5 {
+        theme.pine
+    } else if ratio > 0.2 {
+        theme.gold
+    } else {
+        theme.love
+    };
+    let bar: String = "█".repeat(filled) + &"·".repeat(TTL_BAR_WIDTH - filled);
+    let text = format!("{:02}:{:02} {}", mins, secs, bar);
+    (text, color)
+}
+
+pub(crate) fn render_ttl_cell(remaining_secs: i64, theme: &Theme) -> Cell<'static> {
+    let (text, color) = ttl_cell_parts(remaining_secs, theme);
+    let style = if remaining_secs > 0 && remaining_secs < 60 {
+        Style::default().fg(color).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(color)
+    };
+    Cell::from(Line::from(Span::styled(text, style)))
+}
+
 fn format_size(bytes: u64) -> String {
     if bytes < 1024 {
         format!("{bytes}B")
@@ -235,5 +269,49 @@ mod tests {
     fn format_size_shows_kb_for_large() {
         assert_eq!(format_size(2048), "2.0K");
         assert_eq!(format_size(1536), "1.5K");
+    }
+
+    #[test]
+    fn ttl_cell_expired_has_em_dash() {
+        let theme = Theme::dark();
+        let (text, _) = ttl_cell_parts(0, &theme);
+        assert!(text.contains("— expired"));
+    }
+
+    #[test]
+    fn ttl_cell_has_mm_ss_format() {
+        let theme = Theme::dark();
+        let (text, _) = ttl_cell_parts(277, &theme);
+        assert!(text.starts_with("04:37"));
+    }
+
+    #[test]
+    fn ttl_cell_high_uses_pine() {
+        let theme = Theme::dark();
+        let (_, color) = ttl_cell_parts(270, &theme);
+        assert_eq!(color, theme.pine);
+    }
+
+    #[test]
+    fn ttl_cell_medium_uses_gold() {
+        let theme = Theme::dark();
+        let (_, color) = ttl_cell_parts(120, &theme);
+        assert_eq!(color, theme.gold);
+    }
+
+    #[test]
+    fn ttl_cell_low_uses_love() {
+        let theme = Theme::dark();
+        let (_, color) = ttl_cell_parts(30, &theme);
+        assert_eq!(color, theme.love);
+    }
+
+    #[test]
+    fn ttl_cell_bar_shrinks_as_time_elapses() {
+        let theme = Theme::dark();
+        let (full_text, _) = ttl_cell_parts(300, &theme);
+        let (empty_text, _) = ttl_cell_parts(1, &theme);
+        let filled = |s: &str| s.matches('█').count();
+        assert!(filled(&full_text) >= filled(&empty_text));
     }
 }
