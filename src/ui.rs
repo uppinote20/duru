@@ -70,6 +70,17 @@ fn relative_age(last: chrono::DateTime<chrono::Utc>, now: chrono::DateTime<chron
     sessions::format_duration(elapsed)
 }
 
+fn mode_abbrev(mode: Option<&str>) -> &'static str {
+    match mode {
+        Some("auto") => "auto",
+        Some("default") => "default",
+        Some("acceptEdits") => "accept",
+        Some("plan") => "plan",
+        Some(_) => "other",
+        None => "—",
+    }
+}
+
 fn render_sessions_table(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) {
     let focused = app.sessions_focus == SessionsPane::Table;
     let now = chrono::Utc::now();
@@ -93,9 +104,11 @@ fn render_sessions_table(frame: &mut Frame, app: &App, theme: &Theme, area: Rect
         return;
     }
 
-    let header = Row::new(vec!["", "ID", "Project", "Last", "Cache TTL", "Size"])
-        .style(Style::default().fg(theme.text).add_modifier(Modifier::BOLD))
-        .bottom_margin(1);
+    let header = Row::new(vec![
+        "", "ID", "Project", "Mode", "Last", "Cache TTL", "Size",
+    ])
+    .style(Style::default().fg(theme.text).add_modifier(Modifier::BOLD))
+    .bottom_margin(1);
 
     let rows: Vec<Row> = app
         .sessions
@@ -113,6 +126,7 @@ fn render_sessions_table(frame: &mut Frame, app: &App, theme: &Theme, area: Rect
                 Cell::from(Line::from(vec![Span::raw(" "), state_glyph(state, theme)])),
                 Cell::from(entry.short_id.clone()),
                 Cell::from(project),
+                Cell::from(mode_abbrev(entry.permission_mode.as_deref()).to_string()),
                 Cell::from(relative_age(entry.last_activity, now)),
                 render_ttl_cell(remaining, theme),
                 Cell::from(sessions::format_bytes(entry.file_size)),
@@ -125,6 +139,7 @@ fn render_sessions_table(frame: &mut Frame, app: &App, theme: &Theme, area: Rect
         Constraint::Length(3),
         Constraint::Length(8),
         Constraint::Min(20),
+        Constraint::Length(9),
         Constraint::Length(8),
         Constraint::Length(14),
         Constraint::Length(7),
@@ -199,6 +214,10 @@ fn render_sessions_detail(frame: &mut Frame, app: &App, theme: &Theme, area: Rec
         Line::from(vec![
             Span::styled("CWD:        ", Style::default().fg(theme.muted)),
             Span::raw(cwd_display),
+        ]),
+        Line::from(vec![
+            Span::styled("Mode:       ", Style::default().fg(theme.muted)),
+            Span::raw(mode_abbrev(entry.permission_mode.as_deref()).to_string()),
         ]),
         Line::from(vec![
             Span::styled("Started:    ", Style::default().fg(theme.muted)),
@@ -394,7 +413,7 @@ fn render_help_bar(frame: &mut Frame, mode: AppMode, theme: &Theme, area: Rect) 
 const TTL_BAR_WIDTH: usize = 8;
 
 /// Height of the Sessions-mode detail panel (includes 2 border rows).
-const SESSION_DETAIL_HEIGHT: u16 = 8;
+const SESSION_DETAIL_HEIGHT: u16 = 9;
 
 /// Max width the Project column renders before middle-truncating.
 const PROJECT_NAME_MAX_WIDTH: usize = 22;
@@ -438,6 +457,28 @@ pub(crate) fn render_ttl_cell(remaining_secs: i64, theme: &Theme) -> Cell<'stati
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mode_abbrev_maps_accept_edits_to_accept() {
+        assert_eq!(mode_abbrev(Some("acceptEdits")), "accept");
+    }
+
+    #[test]
+    fn mode_abbrev_passes_through_known_short_values() {
+        assert_eq!(mode_abbrev(Some("auto")), "auto");
+        assert_eq!(mode_abbrev(Some("default")), "default");
+        assert_eq!(mode_abbrev(Some("plan")), "plan");
+    }
+
+    #[test]
+    fn mode_abbrev_falls_back_to_other_for_unknown() {
+        assert_eq!(mode_abbrev(Some("bypassPermissions")), "other");
+    }
+
+    #[test]
+    fn mode_abbrev_returns_dash_for_none() {
+        assert_eq!(mode_abbrev(None), "—");
+    }
 
     #[test]
     fn ttl_cell_expired_has_em_dash() {
