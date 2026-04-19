@@ -165,9 +165,69 @@ fn merge_settings(home: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-fn maybe_star_prompt(_home: &Path, _opts: &InstallOpts) -> std::io::Result<()> {
-    // Implemented in T16.
+fn maybe_star_prompt(home: &Path, opts: &InstallOpts) -> std::io::Result<()> {
+    let marker = duru_dir(home).join(".star-prompted");
+
+    // --yes skips the prompt (CI / scripted installs), unless --star pre-approved.
+    if opts.yes && !opts.star {
+        return Ok(());
+    }
+
+    // Already asked, unless --force-star-prompt.
+    if marker.exists() && !opts.force_star_prompt {
+        return Ok(());
+    }
+
+    let consent = if opts.star { true } else { prompt_star() };
+
+    fs::create_dir_all(duru_dir(home))?;
+    fs::write(&marker, "")?;
+
+    if consent {
+        try_star();
+    }
     Ok(())
+}
+
+fn prompt_star() -> bool {
+    println!();
+    println!("If duru helped you, a GitHub star makes it discoverable to");
+    println!("other Claude Code users. Would you like me to star it now?  [y/N]");
+    use std::io::{self, BufRead};
+    let stdin = io::stdin();
+    let mut line = String::new();
+    if stdin.lock().read_line(&mut line).is_err() {
+        return false;
+    }
+    matches!(line.trim(), "y" | "Y" | "yes" | "Yes")
+}
+
+fn try_star() {
+    if Command::new("gh").arg("--version").output().is_err() {
+        println!("gh CLI not found. Star manually at:");
+        println!("  https://github.com/uppinote20/duru");
+        return;
+    }
+    let auth_ok = Command::new("gh")
+        .args(["auth", "status"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !auth_ok {
+        println!("gh is installed but not authenticated. Run `gh auth login`,");
+        println!("then: gh repo star uppinote20/duru");
+        return;
+    }
+    let star_ok = Command::new("gh")
+        .args(["repo", "star", "uppinote20/duru"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if star_ok {
+        println!("★ Thanks!");
+    } else {
+        println!("  (gh repo star failed — star manually at https://github.com/uppinote20/duru)");
+    }
 }
 
 pub struct StatusReport {
@@ -489,6 +549,51 @@ mod tests {
             .iter()
             .any(|e| e["hooks"][0]["command"].as_str() == Some("bash /other/hook.sh"));
         assert!(has_other);
+    }
+
+    #[test]
+    fn star_prompt_skipped_when_yes_flag() {
+        let home = fake_home();
+        install(home.path(), &opts_install_silent()).unwrap();
+        // With yes=true and star=false, the marker is NOT created.
+        assert!(!duru_dir(home.path()).join(".star-prompted").exists());
+    }
+
+    #[test]
+    fn explicit_star_flag_sets_marker() {
+        let home = fake_home();
+        install(
+            home.path(),
+            &InstallOpts {
+                dry_run: false,
+                yes: false,
+                star: true,
+                force_star_prompt: false,
+            },
+        )
+        .unwrap();
+        assert!(duru_dir(home.path()).join(".star-prompted").exists());
+    }
+
+    #[test]
+    fn prior_star_marker_prevents_re_prompt() {
+        let home = fake_home();
+        // Pre-create the marker and install without --yes and without --star.
+        fs::create_dir_all(duru_dir(home.path())).unwrap();
+        fs::write(duru_dir(home.path()).join(".star-prompted"), "").unwrap();
+
+        install(
+            home.path(),
+            &InstallOpts {
+                dry_run: false,
+                yes: false,
+                star: false,
+                force_star_prompt: false,
+            },
+        )
+        .unwrap();
+        // Marker still there; no prompt interaction because prior marker.
+        assert!(duru_dir(home.path()).join(".star-prompted").exists());
     }
 
     #[test]
