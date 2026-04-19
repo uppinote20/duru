@@ -149,7 +149,26 @@ impl App {
                     self.session_index = self.sessions.len() - 1;
                 }
             }
+            KeyCode::Char('s') => self.cycle_sort(),
+            KeyCode::Char('r') => self.wants_refresh = true,
             _ => {}
+        }
+    }
+
+    fn cycle_sort(&mut self) {
+        self.sessions_sort = match self.sessions_sort {
+            SessionsSort::LastActivity => SessionsSort::CacheTtl,
+            SessionsSort::CacheTtl => SessionsSort::Project,
+            SessionsSort::Project => SessionsSort::Size,
+            SessionsSort::Size => SessionsSort::LastActivity,
+        };
+    }
+
+    pub fn clamp_session_index(&mut self) {
+        if self.sessions.is_empty() {
+            self.session_index = 0;
+        } else if self.session_index >= self.sessions.len() {
+            self.session_index = self.sessions.len() - 1;
         }
     }
 
@@ -411,6 +430,45 @@ mod tests {
         app.sessions_focus = SessionsPane::Detail;
         app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
         assert_eq!(app.session_scroll, 1);
+    }
+
+    #[test]
+    fn sessions_mode_s_cycles_sort() {
+        let mut app = app_in_sessions_mode();
+        assert_eq!(app.sessions_sort, SessionsSort::LastActivity);
+        app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
+        assert_eq!(app.sessions_sort, SessionsSort::CacheTtl);
+        app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
+        assert_eq!(app.sessions_sort, SessionsSort::Project);
+        app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
+        assert_eq!(app.sessions_sort, SessionsSort::Size);
+        app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
+        assert_eq!(app.sessions_sort, SessionsSort::LastActivity);
+    }
+
+    #[test]
+    fn sessions_mode_r_sets_wants_refresh() {
+        let mut app = app_in_sessions_mode();
+        app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
+        assert!(app.wants_refresh);
+    }
+
+    #[test]
+    fn session_index_clamps_when_list_shrinks() {
+        let mut app = app_in_sessions_mode();
+        app.session_index = 4;
+        app.sessions.truncate(2);
+        app.clamp_session_index();
+        assert_eq!(app.session_index, 1);
+    }
+
+    #[test]
+    fn session_index_clamps_to_zero_when_empty() {
+        let mut app = app_in_sessions_mode();
+        app.session_index = 4;
+        app.sessions.clear();
+        app.clamp_session_index();
+        assert_eq!(app.session_index, 0);
     }
 
     #[test]
