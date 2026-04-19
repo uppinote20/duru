@@ -113,7 +113,7 @@ pub fn middle_truncate(s: &str, max: usize) -> String {
 pub const TTL_SECS: i64 = 300;
 
 /// Boundary between `State::Idle` and `State::Stale` (1 hour).
-pub const IDLE_CUTOFF_SECS: i64 = 3600;
+pub(crate) const IDLE_CUTOFF_SECS: i64 = 3600;
 
 /// First N lines of a transcript scanned to extract session_id / permission /
 /// started_at / cwd. Enough to skip past `file-history-snapshot` records

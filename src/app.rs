@@ -9,16 +9,16 @@ use crate::sessions::{SessionCache, SessionEntry, SessionsSort};
 
 /// Sessions-mode refresh cadence when any session had activity in the last
 /// `RECENT_ACTIVITY_SECS` — snappy enough for TTL countdowns to feel live.
-pub const FAST_POLL_MS: u64 = 1000;
+pub(crate) const FAST_POLL_MS: u64 = 1000;
 
 /// Sessions-mode refresh cadence when everything is quiet; backs off to
 /// reduce filesystem churn while still catching new sessions within a second
 /// or two.
-pub const SLOW_POLL_MS: u64 = 2000;
+pub(crate) const SLOW_POLL_MS: u64 = 2000;
 
 /// Threshold below which a session counts as "recent activity" for the
 /// refresh-interval decision.
-pub const RECENT_ACTIVITY_SECS: i64 = 60;
+pub(crate) const RECENT_ACTIVITY_SECS: i64 = 60;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pane {
