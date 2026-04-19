@@ -374,20 +374,16 @@ pub fn demo_sessions() -> Vec<SessionEntry> {
 pub fn sort_entries(entries: &mut [SessionEntry], sort: SessionsSort, now: DateTime<Utc>) {
     match sort {
         SessionsSort::LastActivity => {
-            entries.sort_by(|a, b| b.last_activity.cmp(&a.last_activity));
+            entries.sort_by_key(|e| std::cmp::Reverse(e.last_activity));
         }
         SessionsSort::CacheTtl => {
             entries.sort_by_key(|e| cache_ttl_remaining_secs(e, now));
         }
         SessionsSort::Project => {
-            entries.sort_by(|a, b| {
-                a.project_name
-                    .to_lowercase()
-                    .cmp(&b.project_name.to_lowercase())
-            });
+            entries.sort_by_key(|e| e.project_name.to_lowercase());
         }
         SessionsSort::Size => {
-            entries.sort_by(|a, b| b.file_size.cmp(&a.file_size));
+            entries.sort_by_key(|e| std::cmp::Reverse(e.file_size));
         }
     }
 }

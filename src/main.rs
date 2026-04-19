@@ -1,3 +1,7 @@
+// collapsible_match: the project intentionally uses `match arm => { if cond { ... } }`
+// instead of match guards, for readability when the condition references captured state.
+#![allow(clippy::collapsible_match, clippy::collapsible_if)]
+
 mod app;
 mod markdown;
 mod scan;

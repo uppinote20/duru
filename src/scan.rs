@@ -177,7 +177,7 @@ pub fn scan_claude_dir(claude_dir: &Path) -> Vec<Project> {
         .collect();
 
     // Sort projects alphabetically
-    project_entries.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    project_entries.sort_by_key(|a| a.name.to_lowercase());
 
     // Deduplicate: Claude Code has two encoding schemes (old: `_active`, new: `--active`)
     // Keep the more recently modified entry
