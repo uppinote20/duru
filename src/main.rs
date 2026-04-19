@@ -16,7 +16,7 @@ use std::io;
 use std::path::PathBuf;
 use std::process::Command;
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
@@ -28,7 +28,7 @@ use scan::{demo_projects, scan_claude_dir};
 use theme::Theme;
 
 #[derive(Parser)]
-#[command(name = "duru", version, about = "Claude Code memory viewer")]
+#[command(name = "duru", version, about = "Claude Code memory and sessions dashboard")]
 struct Cli {
     /// Force color theme (dark or light)
     #[arg(long)]
@@ -41,6 +41,47 @@ struct Cli {
     /// Use demo data (for screenshots and testing)
     #[arg(long)]
     demo: bool,
+
+    #[command(subcommand)]
+    command: Option<TopCommand>,
+}
+
+#[derive(Subcommand)]
+enum TopCommand {
+    /// Install, uninstall, or check duru Claude Code hooks
+    Hooks {
+        #[command(subcommand)]
+        action: HooksAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum HooksAction {
+    /// Install duru hooks into ~/.claude/settings.json
+    Install {
+        /// Don't modify anything; print what would happen
+        #[arg(long)]
+        dry_run: bool,
+        /// Non-interactive; skip star prompt
+        #[arg(long)]
+        yes: bool,
+        /// Star the repo without asking
+        #[arg(long)]
+        star: bool,
+        /// Re-ask the star prompt even if previously asked
+        #[arg(long)]
+        force_star_prompt: bool,
+    },
+    /// Remove duru hooks from ~/.claude/settings.json
+    Uninstall {
+        #[arg(long)]
+        dry_run: bool,
+        /// Also delete ~/.claude/duru/ (hooks, registry, markers)
+        #[arg(long)]
+        force: bool,
+    },
+    /// Show current hook installation status
+    Status,
 }
 
 fn resolve_editor() -> String {
@@ -55,14 +96,44 @@ fn resolve_editor_from(visual: Option<&str>, editor: Option<&str>) -> String {
     visual.or(editor).unwrap_or("vi").to_string()
 }
 
+fn run_hooks_command(home: &std::path::Path, action: HooksAction) -> io::Result<()> {
+    match action {
+        HooksAction::Install {
+            dry_run,
+            yes,
+            star,
+            force_star_prompt,
+        } => hooks_install::install(
+            home,
+            &hooks_install::InstallOpts {
+                dry_run,
+                yes,
+                star,
+                force_star_prompt,
+            },
+        ),
+        HooksAction::Uninstall { dry_run, force } => hooks_install::uninstall(
+            home,
+            &hooks_install::UninstallOpts { dry_run, force },
+        ),
+        HooksAction::Status => {
+            let report = hooks_install::status(home)?;
+            hooks_install::print_status(&report);
+            Ok(())
+        }
+    }
+}
+
 fn main() -> io::Result<()> {
     let cli = Cli::parse();
 
-    let claude_dir = cli.path.clone().unwrap_or_else(|| {
-        dirs::home_dir()
-            .expect("cannot resolve home directory")
-            .join(".claude")
-    });
+    let home = dirs::home_dir().ok_or_else(|| io::Error::other("no home dir"))?;
+
+    if let Some(TopCommand::Hooks { action }) = cli.command {
+        return run_hooks_command(&home, action);
+    }
+
+    let claude_dir = cli.path.clone().unwrap_or_else(|| home.join(".claude"));
 
     let projects = if cli.demo {
         demo_projects()
