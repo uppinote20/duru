@@ -18,7 +18,7 @@ pub struct SessionEntry {
     pub started_at: Option<DateTime<Utc>>,
     pub last_activity: DateTime<Utc>,
     pub permission_mode: Option<String>,
-    pub has_last_prompt: bool,
+    pub has_termination_record: bool,
     pub file_size: u64,
 }
 
@@ -84,7 +84,7 @@ pub fn middle_truncate(s: &str, max: usize) -> String {
 pub const TTL_SECS: i64 = 300;
 
 pub fn state_at(entry: &SessionEntry, now: DateTime<Utc>) -> State {
-    if entry.has_last_prompt {
+    if entry.has_termination_record {
         return State::Stale;
     }
     let elapsed = (now - entry.last_activity).num_seconds();
@@ -159,7 +159,7 @@ const TAIL_CHUNK_BYTES: u64 = 8192;
 #[derive(Debug, Default, Clone)]
 pub struct TailRecord {
     pub last_activity: Option<DateTime<Utc>>,
-    pub has_last_prompt: bool,
+    pub has_termination_record: bool,
 }
 
 pub fn parse_tail(path: &Path) -> std::io::Result<TailRecord> {
@@ -192,7 +192,7 @@ pub fn parse_tail(path: &Path) -> std::io::Result<TailRecord> {
             continue;
         };
         if value.get("type").and_then(|v| v.as_str()) == Some("last-prompt") {
-            out.has_last_prompt = true;
+            out.has_termination_record = true;
         }
         if let Some(ts) = value.get("timestamp").and_then(|v| v.as_str())
             && let Ok(dt) = DateTime::parse_from_rfc3339(ts)
@@ -313,13 +313,16 @@ fn parse_session(path: &Path) -> Option<SessionEntry> {
         started_at: first.started_at,
         last_activity,
         permission_mode: first.permission_mode,
-        has_last_prompt: tail.has_last_prompt,
+        has_termination_record: tail.has_termination_record,
         file_size: meta.len(),
     })
 }
 
-#[allow(dead_code)]
-pub fn scan_sessions(claude_dir: &Path) -> Vec<SessionEntry> {
+/// One-shot scan helper. Equivalent to `SessionCache::new().refresh(dir).entries()`.
+/// Used by tests; application code goes through `App::refresh_sessions` so the
+/// cache is preserved across refreshes.
+#[cfg(test)]
+fn scan_sessions(claude_dir: &Path) -> Vec<SessionEntry> {
     let mut cache = SessionCache::new();
     cache.refresh(claude_dir);
     cache.entries()
@@ -339,7 +342,7 @@ pub fn demo_sessions() -> Vec<SessionEntry> {
                 started_at: Some(last_activity - chrono::Duration::minutes(15)),
                 last_activity,
                 permission_mode: Some(mode.to_string()),
-                has_last_prompt: last_prompt,
+                has_termination_record: last_prompt,
                 file_size: size,
             }
         };
@@ -473,7 +476,11 @@ mod tests {
         assert_eq!(middle_truncate("my-very-long-project", 10), "my-v…ject");
     }
 
-    fn make_entry(id: &str, last_activity: DateTime<Utc>, has_last_prompt: bool) -> SessionEntry {
+    fn make_entry(
+        id: &str,
+        last_activity: DateTime<Utc>,
+        has_termination_record: bool,
+    ) -> SessionEntry {
         SessionEntry {
             session_id: id.to_string(),
             short_id: short_id(id),
@@ -483,7 +490,7 @@ mod tests {
             started_at: Some(last_activity),
             last_activity,
             permission_mode: Some("auto".to_string()),
-            has_last_prompt,
+            has_termination_record,
             file_size: 1000,
         }
     }
@@ -513,6 +520,34 @@ mod tests {
     fn state_at_stale_when_last_prompt_present() {
         let now = Utc::now();
         let entry = make_entry("d", now - chrono::Duration::seconds(10), true);
+        assert_eq!(state_at(&entry, now), State::Stale);
+    }
+
+    #[test]
+    fn state_at_active_just_under_300s() {
+        let now = Utc::now();
+        let entry = make_entry("e", now - chrono::Duration::seconds(299), false);
+        assert_eq!(state_at(&entry, now), State::Active);
+    }
+
+    #[test]
+    fn state_at_idle_at_exactly_300s() {
+        let now = Utc::now();
+        let entry = make_entry("f", now - chrono::Duration::seconds(300), false);
+        assert_eq!(state_at(&entry, now), State::Idle);
+    }
+
+    #[test]
+    fn state_at_idle_just_under_3600s() {
+        let now = Utc::now();
+        let entry = make_entry("g", now - chrono::Duration::seconds(3599), false);
+        assert_eq!(state_at(&entry, now), State::Idle);
+    }
+
+    #[test]
+    fn state_at_stale_at_exactly_3600s() {
+        let now = Utc::now();
+        let entry = make_entry("h", now - chrono::Duration::seconds(3600), false);
         assert_eq!(state_at(&entry, now), State::Stale);
     }
 
@@ -638,7 +673,7 @@ mod tests {
             parsed.last_activity.map(|d| d.to_rfc3339()),
             Some("2026-04-19T06:10:00+00:00".to_string())
         );
-        assert!(!parsed.has_last_prompt);
+        assert!(!parsed.has_termination_record);
     }
 
     #[test]
@@ -648,7 +683,7 @@ mod tests {
             r#"{"type":"last-prompt","timestamp":"2026-04-19T06:10:00Z","lastPrompt":"bye"}"#,
         ]);
         let parsed = parse_tail(file.path()).unwrap();
-        assert!(parsed.has_last_prompt);
+        assert!(parsed.has_termination_record);
     }
 
     #[test]
@@ -656,7 +691,7 @@ mod tests {
         let file = tempfile::NamedTempFile::new().unwrap();
         let parsed = parse_tail(file.path()).unwrap();
         assert!(parsed.last_activity.is_none());
-        assert!(!parsed.has_last_prompt);
+        assert!(!parsed.has_termination_record);
     }
 
     #[test]
@@ -687,7 +722,7 @@ mod tests {
         .unwrap();
         let parsed = parse_tail(f.path()).unwrap();
         assert!(
-            parsed.has_last_prompt,
+            parsed.has_termination_record,
             "last-prompt record at end of large file must be detected"
         );
         assert!(

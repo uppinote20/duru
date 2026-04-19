@@ -232,7 +232,6 @@ fn render_sessions_detail(frame: &mut Frame, app: &App, theme: &Theme, area: Rec
             Span::raw(mode_str),
             Span::styled("    TTL: ", Style::default().fg(theme.muted)),
             Span::styled(ttl_text, Style::default().fg(ttl_color)),
-            Span::raw(" ⏳"),
         ]),
         Line::from(vec![
             Span::styled("Transcript: ", Style::default().fg(theme.muted)),
