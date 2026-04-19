@@ -4,6 +4,9 @@ SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty')
 [ -z "$SESSION_ID" ] && exit 0
 
 REGISTRY="$HOME/.claude/duru/registry/${SESSION_ID}.json"
+# Ensure the registry dir exists before mktemp — SessionStart may have been
+# skipped (for instance on `claude --resume` the first time hooks are seen).
+mkdir -p "$(dirname "$REGISTRY")"
 NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 MODE=$(echo "$INPUT" | jq -r '.permission_mode // empty')
 
@@ -13,7 +16,6 @@ if [ -f "$REGISTRY" ]; then
     '.last_heartbeat = $hb | if $mode != "" then .permission_mode = $mode else . end' \
     "$REGISTRY" > "$TMP"
 else
-  mkdir -p "$(dirname "$REGISTRY")"
   CWD=$(echo "$INPUT" | jq -r '.cwd // empty')
   TRANSCRIPT=$(echo "$INPUT" | jq -r '.transcript_path // empty')
   jq -n --arg sid "$SESSION_ID" --arg hb "$NOW" --arg mode "$MODE" \

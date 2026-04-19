@@ -504,6 +504,27 @@ mod tests {
     }
 
     #[test]
+    fn install_respects_custom_home() {
+        // Prove that passing a custom `home` writes under that root and does
+        // NOT touch the real home directory. Sensitive because the hooks
+        // subcommand dispatches through `run_hooks_command(&hooks_home, ...)`
+        // which in turn derives hooks_home from `cli.path`.
+        let real_home = fake_home();
+        let custom_home = fake_home();
+        install(custom_home.path(), &opts_install_silent()).unwrap();
+        assert!(hooks_dir(custom_home.path()).is_dir());
+        assert!(settings_path(custom_home.path()).exists());
+        assert!(
+            !hooks_dir(real_home.path()).exists(),
+            "install must not touch real home"
+        );
+        assert!(
+            !settings_path(real_home.path()).exists(),
+            "install must not touch real home settings"
+        );
+    }
+
+    #[test]
     fn install_is_idempotent() {
         let home = fake_home();
         install(home.path(), &opts_install_silent()).unwrap();

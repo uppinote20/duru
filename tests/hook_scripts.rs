@@ -156,6 +156,39 @@ fn session_end_marks_terminated() {
 }
 
 #[test]
+fn user_prompt_creates_entry_when_session_start_was_missed() {
+    if !jq_present() {
+        return;
+    }
+    // Simulate the situation where SessionStart didn't fire for this session
+    // (e.g., `claude --resume` before duru's hooks had time to handle it, or
+    // `~/.claude/duru/registry/` simply didn't exist yet). The heartbeat
+    // script must mkdir -p and create the entry.
+    let tmp = tempfile::tempdir().unwrap();
+    // Note: no `mkdir -p .claude/duru/registry` here — script must create it.
+    let scripts_dir = tempfile::tempdir().unwrap();
+    let prompt_sh = install_script(&scripts_dir, "user-prompt-submit.sh", USER_PROMPT);
+
+    let payload = r#"{
+        "session_id": "fresh-resume",
+        "cwd": "/tmp",
+        "transcript_path": "/tmp/fr.jsonl",
+        "permission_mode": "auto",
+        "prompt": "hi"
+    }"#;
+    run_hook(&prompt_sh, payload, tmp.path());
+
+    let path = tmp.path().join(".claude/duru/registry/fresh-resume.json");
+    assert!(
+        path.exists(),
+        "heartbeat must create registry file if missing"
+    );
+    let parsed: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(parsed["session_id"], "fresh-resume");
+    assert_eq!(parsed["permission_mode"], "auto");
+}
+
+#[test]
 fn hook_exit_zero_on_malformed_stdin() {
     if !jq_present() {
         return;
