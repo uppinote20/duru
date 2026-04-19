@@ -37,13 +37,14 @@ fn main() {
     let n_warm = cache.entries().len();
 
     let t2 = Instant::now();
-    cache.refresh(&claude_dir);
-    let warm2_elapsed = t2.elapsed();
+    let reg = registry::Registry::load_all(&claude_dir);
+    let reg_elapsed = t2.elapsed();
 
     println!("Sessions discovered: {}", n_cold);
-    println!("Cold refresh (first scan):  {:?}", cold_elapsed);
-    println!("Warm refresh (mtime cache): {:?}", warm_elapsed);
-    println!("Warm refresh (again):       {:?}", warm2_elapsed);
+    println!("Registry entries:    {}", reg.len());
+    println!("Cold refresh:        {:?}", cold_elapsed);
+    println!("Warm refresh:        {:?}", warm_elapsed);
+    println!("Registry load:       {:?}", reg_elapsed);
     if n_cold != n_warm {
         eprintln!(
             "note: entry count changed between cold ({n_cold}) and warm ({n_warm}) refresh \
