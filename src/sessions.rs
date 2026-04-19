@@ -73,6 +73,46 @@ pub fn middle_truncate(s: &str, max: usize) -> String {
     format!("{head}…{tail}")
 }
 
+pub fn state_at(entry: &SessionEntry, now: DateTime<Utc>) -> State {
+    if entry.has_last_prompt {
+        return State::Stale;
+    }
+    let elapsed = (now - entry.last_activity).num_seconds();
+    if elapsed < 300 {
+        State::Active
+    } else if elapsed < 3600 {
+        State::Idle
+    } else {
+        State::Stale
+    }
+}
+
+pub fn cache_ttl_remaining_secs(entry: &SessionEntry, now: DateTime<Utc>) -> i64 {
+    let elapsed = (now - entry.last_activity).num_seconds();
+    (300 - elapsed).max(0)
+}
+
+pub fn sort_entries(entries: &mut [SessionEntry], sort: SessionsSort, now: DateTime<Utc>) {
+    match sort {
+        SessionsSort::LastActivity => {
+            entries.sort_by(|a, b| b.last_activity.cmp(&a.last_activity));
+        }
+        SessionsSort::CacheTtl => {
+            entries.sort_by_key(|e| cache_ttl_remaining_secs(e, now));
+        }
+        SessionsSort::Project => {
+            entries.sort_by(|a, b| {
+                a.project_name
+                    .to_lowercase()
+                    .cmp(&b.project_name.to_lowercase())
+            });
+        }
+        SessionsSort::Size => {
+            entries.sort_by(|a, b| b.file_size.cmp(&a.file_size));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -130,5 +170,106 @@ mod tests {
     #[test]
     fn middle_truncate_respects_max() {
         assert_eq!(middle_truncate("my-very-long-project", 10), "my-v…ject");
+    }
+
+    fn make_entry(id: &str, last_activity: DateTime<Utc>, has_last_prompt: bool) -> SessionEntry {
+        SessionEntry {
+            session_id: id.to_string(),
+            short_id: short_id(id),
+            project_name: format!("proj-{id}"),
+            cwd: None,
+            transcript_path: PathBuf::from(format!("/tmp/{id}.jsonl")),
+            started_at: Some(last_activity),
+            last_activity,
+            permission_mode: Some("auto".to_string()),
+            has_last_prompt,
+            file_size: 1000,
+        }
+    }
+
+    #[test]
+    fn state_at_active_when_recent() {
+        let now = Utc::now();
+        let entry = make_entry("a", now - chrono::Duration::seconds(30), false);
+        assert_eq!(state_at(&entry, now), State::Active);
+    }
+
+    #[test]
+    fn state_at_idle_when_medium() {
+        let now = Utc::now();
+        let entry = make_entry("b", now - chrono::Duration::minutes(10), false);
+        assert_eq!(state_at(&entry, now), State::Idle);
+    }
+
+    #[test]
+    fn state_at_stale_when_old() {
+        let now = Utc::now();
+        let entry = make_entry("c", now - chrono::Duration::hours(2), false);
+        assert_eq!(state_at(&entry, now), State::Stale);
+    }
+
+    #[test]
+    fn state_at_stale_when_last_prompt_present() {
+        let now = Utc::now();
+        let entry = make_entry("d", now - chrono::Duration::seconds(10), true);
+        assert_eq!(state_at(&entry, now), State::Stale);
+    }
+
+    #[test]
+    fn sort_by_last_activity_desc() {
+        let now = Utc::now();
+        let mut entries = vec![
+            make_entry("old", now - chrono::Duration::minutes(10), false),
+            make_entry("new", now - chrono::Duration::seconds(5), false),
+            make_entry("mid", now - chrono::Duration::minutes(2), false),
+        ];
+        sort_entries(&mut entries, SessionsSort::LastActivity, now);
+        assert_eq!(entries[0].session_id, "new");
+        assert_eq!(entries[1].session_id, "mid");
+        assert_eq!(entries[2].session_id, "old");
+    }
+
+    #[test]
+    fn sort_by_cache_ttl_asc_expiring_first() {
+        let now = Utc::now();
+        let mut entries = vec![
+            make_entry("fresh", now - chrono::Duration::seconds(10), false),
+            make_entry("expiring", now - chrono::Duration::seconds(270), false),
+            make_entry("middle", now - chrono::Duration::seconds(120), false),
+        ];
+        sort_entries(&mut entries, SessionsSort::CacheTtl, now);
+        assert_eq!(entries[0].session_id, "expiring");
+        assert_eq!(entries[1].session_id, "middle");
+        assert_eq!(entries[2].session_id, "fresh");
+    }
+
+    #[test]
+    fn sort_by_project_alphabetical() {
+        let now = Utc::now();
+        let mut entries = vec![
+            make_entry("c", now, false),
+            make_entry("a", now, false),
+            make_entry("b", now, false),
+        ];
+        sort_entries(&mut entries, SessionsSort::Project, now);
+        assert_eq!(entries[0].session_id, "a");
+        assert_eq!(entries[2].session_id, "c");
+    }
+
+    #[test]
+    fn sort_by_size_desc() {
+        let now = Utc::now();
+        let mut entries = vec![
+            make_entry("small", now, false),
+            make_entry("big", now, false),
+            make_entry("mid", now, false),
+        ];
+        entries[0].file_size = 100;
+        entries[1].file_size = 10_000;
+        entries[2].file_size = 1_000;
+        sort_entries(&mut entries, SessionsSort::Size, now);
+        assert_eq!(entries[0].session_id, "big");
+        assert_eq!(entries[1].session_id, "mid");
+        assert_eq!(entries[2].session_id, "small");
     }
 }
