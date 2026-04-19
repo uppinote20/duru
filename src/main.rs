@@ -4,6 +4,7 @@
 
 mod app;
 mod hook_scripts;
+mod hooks_install;
 mod markdown;
 mod registry;
 mod scan;
