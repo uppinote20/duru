@@ -170,6 +170,77 @@ fn maybe_star_prompt(_home: &Path, _opts: &InstallOpts) -> std::io::Result<()> {
     Ok(())
 }
 
+pub fn uninstall(home: &Path, opts: &UninstallOpts) -> std::io::Result<()> {
+    if !check_jq_available() {
+        eprintln!("error: `jq` is required but not found on PATH.");
+        return Err(std::io::Error::other("jq missing"));
+    }
+
+    if opts.dry_run {
+        println!(
+            "[dry-run] would remove duru hook entries from {}",
+            settings_path(home).display()
+        );
+        if opts.force {
+            println!("[dry-run] would remove {}", duru_dir(home).display());
+        }
+        return Ok(());
+    }
+
+    let settings = settings_path(home);
+    if !settings.exists() {
+        return Ok(());
+    }
+
+    let backup_name = format!(
+        "settings.json.duru.bak.{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+    );
+    fs::copy(&settings, home.join(".claude").join(&backup_name))?;
+
+    let input = fs::read_to_string(&settings)?;
+    let filter_expr = r#"
+        if .hooks == null then . else
+          .hooks |= with_entries(
+            .value |= map(
+              select(
+                (._duru != true) and
+                ((.hooks // []) | all((.command // "") | contains(".claude/duru/hooks/") | not))
+              )
+            )
+          )
+        end
+    "#;
+
+    let mut child = Command::new("jq")
+        .arg(filter_expr)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()?;
+    child.stdin.as_mut().unwrap().write_all(input.as_bytes())?;
+    let result = child.wait_with_output()?;
+    if !result.status.success() {
+        return Err(std::io::Error::other("jq filter failed"));
+    }
+    if serde_json::from_slice::<serde_json::Value>(&result.stdout).is_err() {
+        return Err(std::io::Error::other("filtered settings invalid JSON"));
+    }
+
+    let tmp = settings.with_extension("json.duru.tmp");
+    fs::write(&tmp, &result.stdout)?;
+    fs::rename(&tmp, &settings)?;
+
+    if opts.force {
+        let _ = fs::remove_dir_all(duru_dir(home));
+    }
+
+    println!("✓ Hooks uninstalled.");
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -273,6 +344,83 @@ mod tests {
             })
             .collect();
         assert_eq!(backups.len(), 1);
+    }
+
+    fn opts_uninstall_silent() -> UninstallOpts {
+        UninstallOpts {
+            dry_run: false,
+            force: false,
+        }
+    }
+
+    #[test]
+    fn uninstall_removes_duru_entries() {
+        let home = fake_home();
+        install(home.path(), &opts_install_silent()).unwrap();
+        uninstall(home.path(), &opts_uninstall_silent()).unwrap();
+        let s = fs::read_to_string(settings_path(home.path())).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&s).unwrap();
+        for event in EVENTS {
+            let arr = parsed["hooks"][event].as_array();
+            if let Some(arr) = arr {
+                assert!(
+                    !arr.iter().any(|e| e["_duru"] == true),
+                    "{event} still has duru entry"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn uninstall_preserves_non_duru_hooks() {
+        let home = fake_home();
+        let existing = r#"{
+            "hooks": {
+                "PreToolUse": [
+                    {"matcher": "Bash", "hooks": [{"type": "command", "command": "bash /other/hook.sh"}]}
+                ]
+            }
+        }"#;
+        fs::write(settings_path(home.path()), existing).unwrap();
+        install(home.path(), &opts_install_silent()).unwrap();
+        uninstall(home.path(), &opts_uninstall_silent()).unwrap();
+
+        let s = fs::read_to_string(settings_path(home.path())).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&s).unwrap();
+        let pre = parsed["hooks"]["PreToolUse"].as_array().unwrap();
+        let has_other = pre
+            .iter()
+            .any(|e| e["hooks"][0]["command"].as_str() == Some("bash /other/hook.sh"));
+        assert!(has_other);
+    }
+
+    #[test]
+    fn uninstall_identifies_by_command_path_even_without_marker() {
+        let home = fake_home();
+        install(home.path(), &opts_install_silent()).unwrap();
+
+        // Strip the _duru markers to simulate a user who edited settings.json.
+        let raw = fs::read_to_string(settings_path(home.path())).unwrap();
+        let stripped = raw
+            .replace("\"_duru\": true,", "")
+            .replace("\"_duru\":true,", "");
+        fs::write(settings_path(home.path()), stripped).unwrap();
+
+        uninstall(home.path(), &opts_uninstall_silent()).unwrap();
+
+        let s = fs::read_to_string(settings_path(home.path())).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&s).unwrap();
+        for event in EVENTS {
+            if let Some(arr) = parsed["hooks"][event].as_array() {
+                for e in arr.iter() {
+                    let cmd = e["hooks"][0]["command"].as_str().unwrap_or("");
+                    assert!(
+                        !cmd.contains(".claude/duru/hooks/"),
+                        "duru path still present after uninstall: {cmd}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
