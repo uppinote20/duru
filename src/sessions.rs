@@ -8,6 +8,8 @@ use chrono::{DateTime, Utc};
 
 use crate::scan::decode_project_name;
 
+use crate::registry::RegistrySource;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionEntry {
     pub session_id: String,
@@ -18,6 +20,9 @@ pub struct SessionEntry {
     pub started_at: Option<DateTime<Utc>>,
     pub last_activity: DateTime<Utc>,
     pub file_size: u64,
+    pub permission_mode: Option<String>,
+    pub registry_source: Option<RegistrySource>,
+    pub is_alive: Option<bool>,
 }
 
 /// Two-state model aligned with Anthropic's 5-minute prompt cache TTL:
@@ -322,6 +327,9 @@ fn parse_session_at(path: &Path, now: DateTime<Utc>) -> Option<SessionEntry> {
         started_at: first.started_at,
         last_activity,
         file_size: meta.len(),
+        permission_mode: None,
+        registry_source: None,
+        is_alive: None,
     })
 }
 
@@ -348,6 +356,9 @@ pub fn demo_sessions() -> Vec<SessionEntry> {
             started_at: Some(last_activity - chrono::Duration::minutes(15)),
             last_activity,
             file_size: size,
+            permission_mode: None,
+            registry_source: None,
+            is_alive: None,
         }
     };
     vec![
@@ -478,6 +489,9 @@ mod tests {
             started_at: Some(last_activity),
             last_activity,
             file_size: 1000,
+            permission_mode: None,
+            registry_source: None,
+            is_alive: None,
         }
     }
 

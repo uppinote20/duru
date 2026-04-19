@@ -3,6 +3,8 @@
 
 #![allow(dead_code)]
 
+#[path = "../src/registry.rs"]
+mod registry;
 #[path = "../src/scan.rs"]
 mod scan;
 #[path = "../src/sessions.rs"]
