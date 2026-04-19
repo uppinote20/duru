@@ -169,3 +169,126 @@ fn maybe_star_prompt(_home: &Path, _opts: &InstallOpts) -> std::io::Result<()> {
     // Implemented in T16.
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fake_home() -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(tmp.path().join(".claude")).unwrap();
+        tmp
+    }
+
+    fn opts_install_silent() -> InstallOpts {
+        InstallOpts {
+            dry_run: false,
+            yes: true,
+            star: false,
+            force_star_prompt: false,
+        }
+    }
+
+    #[test]
+    fn install_creates_hooks_and_registry_dirs() {
+        let home = fake_home();
+        install(home.path(), &opts_install_silent()).unwrap();
+        assert!(hooks_dir(home.path()).is_dir());
+        assert!(registry_dir(home.path()).is_dir());
+    }
+
+    #[test]
+    fn install_writes_six_hook_scripts() {
+        let home = fake_home();
+        install(home.path(), &opts_install_silent()).unwrap();
+        for (name, _) in hook_scripts::all() {
+            let p = hooks_dir(home.path()).join(name);
+            assert!(p.is_file(), "{} missing", p.display());
+        }
+    }
+
+    #[test]
+    fn install_creates_valid_json_settings_from_scratch() {
+        let home = fake_home();
+        install(home.path(), &opts_install_silent()).unwrap();
+        let s = fs::read_to_string(settings_path(home.path())).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&s).unwrap();
+        for event in EVENTS {
+            assert!(parsed["hooks"][event].is_array(), "{event} not array");
+        }
+    }
+
+    #[test]
+    fn install_preserves_existing_non_duru_hooks_and_env() {
+        let home = fake_home();
+        let existing = r#"{
+            "hooks": {
+                "PreToolUse": [
+                    {"matcher": "Bash", "hooks": [{"type": "command", "command": "bash /some/other/hook.sh"}]}
+                ]
+            },
+            "env": {"FOO": "bar"}
+        }"#;
+        fs::write(settings_path(home.path()), existing).unwrap();
+        install(home.path(), &opts_install_silent()).unwrap();
+
+        let s = fs::read_to_string(settings_path(home.path())).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&s).unwrap();
+        let pre = parsed["hooks"]["PreToolUse"].as_array().unwrap();
+        let has_other = pre
+            .iter()
+            .any(|e| e["hooks"][0]["command"].as_str() == Some("bash /some/other/hook.sh"));
+        assert!(has_other, "existing non-duru hook must be preserved");
+        assert_eq!(parsed["env"]["FOO"].as_str(), Some("bar"));
+    }
+
+    #[test]
+    fn install_marks_entries_with_duru_flag() {
+        let home = fake_home();
+        install(home.path(), &opts_install_silent()).unwrap();
+        let s = fs::read_to_string(settings_path(home.path())).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&s).unwrap();
+        for event in EVENTS {
+            let entries = parsed["hooks"][event].as_array().unwrap();
+            assert!(
+                entries.iter().any(|e| e["_duru"] == true),
+                "{event} has no duru-marked entry"
+            );
+        }
+    }
+
+    #[test]
+    fn install_creates_backup_when_settings_exists() {
+        let home = fake_home();
+        fs::write(settings_path(home.path()), r#"{"hooks":{}}"#).unwrap();
+        install(home.path(), &opts_install_silent()).unwrap();
+        let claude_dir = home.path().join(".claude");
+        let backups: Vec<_> = fs::read_dir(&claude_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with("settings.json.duru.bak.")
+            })
+            .collect();
+        assert_eq!(backups.len(), 1);
+    }
+
+    #[test]
+    fn install_dry_run_does_not_modify() {
+        let home = fake_home();
+        install(
+            home.path(),
+            &InstallOpts {
+                dry_run: true,
+                yes: true,
+                star: false,
+                force_star_prompt: false,
+            },
+        )
+        .unwrap();
+        assert!(!hooks_dir(home.path()).exists());
+        assert!(!settings_path(home.path()).exists());
+    }
+}
