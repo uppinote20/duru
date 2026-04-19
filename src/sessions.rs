@@ -1,8 +1,12 @@
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use chrono::{DateTime, Utc};
+
+use crate::scan::decode_project_name;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionEntry {
@@ -192,6 +196,123 @@ pub fn parse_tail(path: &Path) -> std::io::Result<TailRecord> {
     Ok(out)
 }
 
+#[derive(Debug, Default)]
+pub struct SessionCache {
+    by_path: HashMap<PathBuf, (SessionEntry, SystemTime)>,
+}
+
+impl SessionCache {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn entries(&self) -> Vec<SessionEntry> {
+        self.by_path.values().map(|(e, _)| e.clone()).collect()
+    }
+
+    pub fn refresh(&mut self, claude_dir: &Path) {
+        let found = walk_session_files(claude_dir);
+        let found_paths: std::collections::HashSet<PathBuf> =
+            found.iter().map(|(p, _)| p.clone()).collect();
+
+        self.by_path.retain(|path, _| found_paths.contains(path));
+
+        for (path, mtime) in found {
+            let needs_reparse = match self.by_path.get(&path) {
+                Some((_, prev_mtime)) => *prev_mtime != mtime,
+                None => true,
+            };
+            if !needs_reparse {
+                continue;
+            }
+            if let Some(entry) = parse_session(&path) {
+                self.by_path.insert(path.clone(), (entry, mtime));
+            }
+        }
+    }
+}
+
+fn walk_session_files(claude_dir: &Path) -> Vec<(PathBuf, SystemTime)> {
+    let mut out = Vec::new();
+    let projects_dir = claude_dir.join("projects");
+    let Ok(project_iter) = std::fs::read_dir(&projects_dir) else {
+        return out;
+    };
+    for project_entry in project_iter.flatten() {
+        let project_path = project_entry.path();
+        if !project_path.is_dir() {
+            continue;
+        }
+        let Ok(file_iter) = std::fs::read_dir(&project_path) else {
+            continue;
+        };
+        for file_entry in file_iter.flatten() {
+            let path = file_entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let fname = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if fname == "skill-injections.jsonl" {
+                continue;
+            }
+            if !fname.ends_with(".jsonl") {
+                continue;
+            }
+            let Ok(meta) = path.metadata() else { continue };
+            let Ok(mtime) = meta.modified() else { continue };
+            out.push((path, mtime));
+        }
+    }
+    out
+}
+
+fn parse_session(path: &Path) -> Option<SessionEntry> {
+    let meta = path.metadata().ok()?;
+    let mtime_sys = meta.modified().ok()?;
+    let mtime = DateTime::<Utc>::from(mtime_sys);
+
+    let file = File::open(path).ok()?;
+    let first = parse_first_record(file);
+    let tail = parse_tail(path).ok()?;
+
+    let filename_uuid = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_string();
+    let session_id = first.session_id.unwrap_or_else(|| filename_uuid.clone());
+    let short = short_id(&session_id);
+
+    let project_dir_name = path
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_string();
+    let project_name = decode_project_name(&project_dir_name).unwrap_or(project_dir_name);
+
+    let last_activity = tail.last_activity.unwrap_or(mtime);
+
+    Some(SessionEntry {
+        session_id,
+        short_id: short,
+        project_name,
+        cwd: first.cwd.map(PathBuf::from),
+        transcript_path: path.to_path_buf(),
+        started_at: first.started_at,
+        last_activity,
+        permission_mode: first.permission_mode,
+        has_last_prompt: tail.has_last_prompt,
+        file_size: meta.len(),
+    })
+}
+
+pub fn scan_sessions(claude_dir: &Path) -> Vec<SessionEntry> {
+    let mut cache = SessionCache::new();
+    cache.refresh(claude_dir);
+    cache.entries()
+}
+
 pub fn sort_entries(entries: &mut [SessionEntry], sort: SessionsSort, now: DateTime<Utc>) {
     match sort {
         SessionsSort::LastActivity => {
@@ -364,6 +485,61 @@ mod tests {
             writeln!(f, "{line}").unwrap();
         }
         f
+    }
+
+    use std::fs;
+
+    #[test]
+    fn scan_empty_claude_dir_returns_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let entries = scan_sessions(tmp.path());
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn scan_skips_skill_injections_jsonl() {
+        let tmp = tempfile::tempdir().unwrap();
+        let encoded = tmp.path().join("projects").join("-Users-fake-realproj");
+        fs::create_dir_all(&encoded).unwrap();
+        fs::write(encoded.join("skill-injections.jsonl"), "").unwrap();
+        let entries = scan_sessions(tmp.path());
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn cache_refresh_on_empty_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut cache = SessionCache::new();
+        cache.refresh(tmp.path());
+        assert!(cache.entries().is_empty());
+        cache.refresh(tmp.path());
+        assert!(cache.entries().is_empty());
+    }
+
+    #[test]
+    fn cache_removes_deleted_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let proj = tmp.path().join("projects").join("-x");
+        fs::create_dir_all(&proj).unwrap();
+        let jsonl = proj.join("zzzz1234-zzzz-zzzz-zzzz-zzzzzzzzzzzz.jsonl");
+        fs::write(
+            &jsonl,
+            r#"{"type":"user","timestamp":"2026-04-19T06:00:00Z"}"#,
+        )
+        .unwrap();
+
+        let mut cache = SessionCache::new();
+        cache.refresh(tmp.path());
+        let initial_count = cache.entries().len();
+        fs::remove_file(&jsonl).unwrap();
+        cache.refresh(tmp.path());
+        assert!(
+            cache.entries().len() < initial_count
+                || !cache
+                    .entries()
+                    .iter()
+                    .any(|e| e.transcript_path == jsonl)
+        );
     }
 
     #[test]
