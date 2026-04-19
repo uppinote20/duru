@@ -132,8 +132,19 @@ fn main() -> io::Result<()> {
 
     let home = dirs::home_dir().ok_or_else(|| io::Error::other("no home dir"))?;
 
+    // `--path <dir>` treats <dir> as the `.claude` root, so the home directory
+    // we pass into the hooks command is the parent of <dir>. When `--path` is
+    // omitted, the real home directory is used.
+    let hooks_home = match &cli.path {
+        Some(claude_root) => claude_root
+            .parent()
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_else(|| home.clone()),
+        None => home.clone(),
+    };
+
     if let Some(TopCommand::Hooks { action }) = cli.command {
-        return run_hooks_command(&home, action);
+        return run_hooks_command(&hooks_home, action);
     }
 
     let claude_dir = cli.path.clone().unwrap_or_else(|| home.join(".claude"));

@@ -256,6 +256,11 @@ pub(crate) fn dedup_same_pid(
                 continue;
             }
             let this_started = entries[p].0.started_at;
+            // If either entry lacks started_at we fall through to the dedup
+            // (treat as same process). Very old transcripts from before hooks
+            // existed may have no started_at, so this can over-eagerly mark
+            // such entries Terminated — acceptable since they would be Stale
+            // by mtime anyway.
             let close_enough = match (latest_started, this_started) {
                 (Some(a), Some(b)) => (a - b).num_seconds().abs() < 60,
                 _ => true,

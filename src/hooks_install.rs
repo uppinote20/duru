@@ -118,6 +118,15 @@ fn merge_settings(home: &Path) -> std::io::Result<()> {
         fs::copy(&settings, home.join(".claude").join(&backup_name))?;
     }
 
+    // Build a jq expression that, for each event:
+    //  (1) strips any pre-existing duru entries (identified by _duru marker
+    //      OR command path containing ".claude/duru/hooks/"), then
+    //  (2) appends the fresh duru entry.
+    // This makes `install` idempotent — running it twice yields the same
+    // settings.json as running it once. The command string is passed via
+    // `jq --arg` (not interpolated) so paths containing quotes or
+    // backslashes don't break the filter syntax.
+    let mut jq_args: Vec<String> = Vec::new();
     let mut jq_expr = String::from(". as $orig | $orig | .hooks = (( .hooks // {} )");
     for event in EVENTS {
         let script_path = hooks_dir_p
@@ -125,10 +134,16 @@ fn merge_settings(home: &Path) -> std::io::Result<()> {
             .to_string_lossy()
             .to_string();
         let command_str = format!("bash {script_path}");
+        let arg_name = format!("cmd_{event}");
+        jq_args.push("--arg".to_string());
+        jq_args.push(arg_name.clone());
+        jq_args.push(command_str);
         jq_expr.push_str(&format!(
-            " | .[\"{event}\"] = ((.[\"{event}\"] // []) + \
-             [{{\"_duru\": true, \"hooks\": [{{\"type\": \"command\", \
-             \"command\": \"{command_str}\"}}]}}])"
+            " | .[\"{event}\"] = \
+               ([(.[\"{event}\"] // [])[] | \
+                 select(._duru != true \
+                   and ((.hooks // []) | all(((.command // \"\")) | contains(\".claude/duru/hooks/\") | not)))] \
+                + [{{\"_duru\": true, \"hooks\": [{{\"type\": \"command\", \"command\": ${arg_name}}}]}}])"
         ));
     }
     jq_expr.push(')');
@@ -139,11 +154,12 @@ fn merge_settings(home: &Path) -> std::io::Result<()> {
         "{}".to_string()
     };
 
-    let mut child = Command::new("jq")
-        .arg(&jq_expr)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()?;
+    let mut cmd = Command::new("jq");
+    for arg in &jq_args {
+        cmd.arg(arg);
+    }
+    cmd.arg(&jq_expr);
+    let mut child = cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).spawn()?;
     child.stdin.as_mut().unwrap().write_all(input.as_bytes())?;
     let result = child.wait_with_output()?;
 
@@ -286,6 +302,11 @@ pub fn status(home: &Path) -> std::io::Result<StatusReport> {
             if let Ok(bytes) = fs::read(&path)
                 && let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(&bytes)
             {
+                // Align with Registry::load_all: only count entries whose
+                // schema we can actually read.
+                if parsed["schema_version"] != crate::registry::CURRENT_SCHEMA_VERSION {
+                    continue;
+                }
                 if parsed["terminated"] == true {
                     terminated += 1;
                 } else {
@@ -478,6 +499,23 @@ mod tests {
             assert!(
                 entries.iter().any(|e| e["_duru"] == true),
                 "{event} has no duru-marked entry"
+            );
+        }
+    }
+
+    #[test]
+    fn install_is_idempotent() {
+        let home = fake_home();
+        install(home.path(), &opts_install_silent()).unwrap();
+        install(home.path(), &opts_install_silent()).unwrap();
+        let s = fs::read_to_string(settings_path(home.path())).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&s).unwrap();
+        for event in EVENTS {
+            let arr = parsed["hooks"][event].as_array().unwrap();
+            let duru_count = arr.iter().filter(|e| e["_duru"] == true).count();
+            assert_eq!(
+                duru_count, 1,
+                "{event} has {duru_count} duru entries after two installs"
             );
         }
     }
