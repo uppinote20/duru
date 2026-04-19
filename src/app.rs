@@ -1,15 +1,29 @@
 use std::fs;
 use std::path::Path;
+use std::time::Instant;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::scan::Project;
+use crate::sessions::{SessionCache, SessionEntry, SessionsSort};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pane {
     Projects,
     Files,
     Preview,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppMode {
+    Memory,
+    Sessions,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionsPane {
+    Table,
+    Detail,
 }
 
 pub struct App {
@@ -21,6 +35,18 @@ pub struct App {
     pub content: String,
     pub should_quit: bool,
     pub wants_edit: bool,
+
+    // Sessions mode
+    pub mode: AppMode,
+    pub session_cache: SessionCache,
+    pub sessions: Vec<SessionEntry>,
+    pub session_index: usize,
+    pub session_scroll: u16,
+    pub sessions_focus: SessionsPane,
+    pub sessions_sort: SessionsSort,
+    pub last_refresh: Instant,
+    pub wants_refresh: bool,
+    pub skip_real_refresh: bool,
 }
 
 impl App {
@@ -34,6 +60,17 @@ impl App {
             content: String::new(),
             should_quit: false,
             wants_edit: false,
+
+            mode: AppMode::Memory,
+            session_cache: SessionCache::new(),
+            sessions: Vec::new(),
+            session_index: 0,
+            session_scroll: 0,
+            sessions_focus: SessionsPane::Table,
+            sessions_sort: SessionsSort::default(),
+            last_refresh: Instant::now(),
+            wants_refresh: false,
+            skip_real_refresh: false,
         };
         app.load_content();
         app

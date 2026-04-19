@@ -13,6 +13,8 @@ mod app;
 mod markdown;
 #[path = "../src/scan.rs"]
 mod scan;
+#[path = "../src/sessions.rs"]
+mod sessions;
 #[path = "../src/theme.rs"]
 mod theme;
 #[path = "../src/ui.rs"]
