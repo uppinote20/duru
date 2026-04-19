@@ -230,9 +230,10 @@ impl App {
                 }
             }
             SessionsPane::Detail => {
-                // Detail holds 6 content lines in a 6-row viewport; scrolling
-                // beyond 5 shows only blank space. Clamp to avoid that.
-                self.session_scroll = (self.session_scroll.saturating_add(1)).min(5);
+                // Detail has 6 content lines rendered into a 6-row viewport
+                // (Length(8) minus 2 borders). Max meaningful scroll is 0
+                // until MVP2 adds more fields — j is a no-op here.
+                // Keep the arm so the binding is intentionally defined.
             }
         }
     }
@@ -464,21 +465,15 @@ mod tests {
     }
 
     #[test]
-    fn sessions_mode_detail_j_scrolls_down() {
-        let mut app = app_in_sessions_mode();
-        app.sessions_focus = SessionsPane::Detail;
-        app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
-        assert_eq!(app.session_scroll, 1);
-    }
-
-    #[test]
-    fn sessions_mode_detail_j_clamps_at_five() {
+    fn sessions_mode_detail_j_is_bounded_to_zero_in_mvp1() {
+        // Detail has 6 content lines in a 6-row viewport, so max_scroll is 0.
+        // j is bound but effectively no-op until MVP2 adds more fields.
         let mut app = app_in_sessions_mode();
         app.sessions_focus = SessionsPane::Detail;
         for _ in 0..20 {
             app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
         }
-        assert_eq!(app.session_scroll, 5);
+        assert_eq!(app.session_scroll, 0);
     }
 
     #[test]

@@ -396,6 +396,9 @@ pub fn sort_entries(entries: &mut [SessionEntry], sort: SessionsSort, now: DateT
             entries.sort_by_key(|e| std::cmp::Reverse(e.last_activity));
         }
         SessionsSort::CacheTtl => {
+            // Ascending on purpose: sessions closest to expiry come first
+            // ("needs attention" order). Do not "fix" to Reverse — that
+            // would hide the sessions a user cares most about at the bottom.
             entries.sort_by_key(|e| cache_ttl_remaining_secs(e, now));
         }
         SessionsSort::Project => {

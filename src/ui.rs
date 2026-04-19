@@ -339,7 +339,7 @@ fn render_files_pane(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) {
                     };
 
                     let prefix = if is_selected { "▸ " } else { "  " };
-                    let size = format_size(file.size);
+                    let size = sessions::format_bytes(file.size);
 
                     ListItem::new(Line::from(vec![
                         Span::styled(prefix, style),
@@ -444,29 +444,9 @@ pub(crate) fn render_ttl_cell(remaining_secs: i64, theme: &Theme) -> Cell<'stati
     Cell::from(Line::from(Span::styled(text, style)))
 }
 
-fn format_size(bytes: u64) -> String {
-    if bytes < 1024 {
-        format!("{bytes}B")
-    } else {
-        format!("{:.1}K", bytes as f64 / 1024.0)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn format_size_shows_bytes_for_small() {
-        assert_eq!(format_size(100), "100B");
-        assert_eq!(format_size(0), "0B");
-    }
-
-    #[test]
-    fn format_size_shows_kb_for_large() {
-        assert_eq!(format_size(2048), "2.0K");
-        assert_eq!(format_size(1536), "1.5K");
-    }
 
     #[test]
     fn ttl_cell_expired_has_em_dash() {
