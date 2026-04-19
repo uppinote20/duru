@@ -124,8 +124,59 @@ impl App {
         }
     }
 
-    fn handle_key_sessions(&mut self, _key: KeyEvent) {
-        // Filled in by Task 11
+    fn handle_key_sessions(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Char('q') => self.should_quit = true,
+            KeyCode::Up | KeyCode::Char('k') => self.sessions_move_up(),
+            KeyCode::Down | KeyCode::Char('j') => self.sessions_move_down(),
+            KeyCode::Left | KeyCode::Char('h') => {
+                if self.sessions_focus == SessionsPane::Detail {
+                    self.sessions_focus = SessionsPane::Table;
+                }
+            }
+            KeyCode::Right | KeyCode::Char('l') | KeyCode::Enter => {
+                if self.sessions_focus == SessionsPane::Table {
+                    self.sessions_focus = SessionsPane::Detail;
+                }
+            }
+            KeyCode::Char('g') => {
+                if self.sessions_focus == SessionsPane::Table {
+                    self.session_index = 0;
+                }
+            }
+            KeyCode::Char('G') => {
+                if self.sessions_focus == SessionsPane::Table && !self.sessions.is_empty() {
+                    self.session_index = self.sessions.len() - 1;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn sessions_move_up(&mut self) {
+        match self.sessions_focus {
+            SessionsPane::Table => {
+                if self.session_index > 0 {
+                    self.session_index -= 1;
+                }
+            }
+            SessionsPane::Detail => {
+                self.session_scroll = self.session_scroll.saturating_sub(1);
+            }
+        }
+    }
+
+    fn sessions_move_down(&mut self) {
+        match self.sessions_focus {
+            SessionsPane::Table => {
+                if self.session_index + 1 < self.sessions.len() {
+                    self.session_index += 1;
+                }
+            }
+            SessionsPane::Detail => {
+                self.session_scroll = self.session_scroll.saturating_add(1);
+            }
+        }
     }
 
     fn handle_key_memory(&mut self, key: KeyEvent) {
@@ -267,6 +318,99 @@ mod tests {
     fn new_app_starts_in_memory_mode() {
         let app = App::new(make_test_projects());
         assert_eq!(app.mode, AppMode::Memory);
+    }
+
+    fn app_in_sessions_mode() -> App {
+        use crate::sessions::demo_sessions;
+        let mut app = App::new(make_test_projects());
+        app.sessions = demo_sessions();
+        app.mode = AppMode::Sessions;
+        app
+    }
+
+    #[test]
+    fn sessions_mode_j_moves_row_down() {
+        let mut app = app_in_sessions_mode();
+        app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+        assert_eq!(app.session_index, 1);
+    }
+
+    #[test]
+    fn sessions_mode_k_moves_row_up() {
+        let mut app = app_in_sessions_mode();
+        app.session_index = 2;
+        app.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE));
+        assert_eq!(app.session_index, 1);
+    }
+
+    #[test]
+    fn sessions_mode_j_does_not_overflow() {
+        let mut app = app_in_sessions_mode();
+        app.session_index = app.sessions.len() - 1;
+        app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+        assert_eq!(app.session_index, app.sessions.len() - 1);
+    }
+
+    #[test]
+    fn sessions_mode_l_enters_detail() {
+        let mut app = app_in_sessions_mode();
+        app.handle_key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE));
+        assert_eq!(app.sessions_focus, SessionsPane::Detail);
+    }
+
+    #[test]
+    fn sessions_mode_h_exits_detail() {
+        let mut app = app_in_sessions_mode();
+        app.sessions_focus = SessionsPane::Detail;
+        app.handle_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE));
+        assert_eq!(app.sessions_focus, SessionsPane::Table);
+    }
+
+    #[test]
+    fn sessions_mode_g_jumps_top() {
+        let mut app = app_in_sessions_mode();
+        app.session_index = 3;
+        app.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE));
+        assert_eq!(app.session_index, 0);
+    }
+
+    #[test]
+    fn sessions_mode_shift_g_jumps_bottom() {
+        let mut app = app_in_sessions_mode();
+        app.session_index = 0;
+        app.handle_key(KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT));
+        assert_eq!(app.session_index, app.sessions.len() - 1);
+    }
+
+    #[test]
+    fn sessions_mode_q_quits() {
+        let mut app = app_in_sessions_mode();
+        app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn sessions_mode_e_ignored() {
+        let mut app = app_in_sessions_mode();
+        app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+        assert!(!app.wants_edit);
+    }
+
+    #[test]
+    fn sessions_mode_detail_k_scrolls_up() {
+        let mut app = app_in_sessions_mode();
+        app.sessions_focus = SessionsPane::Detail;
+        app.session_scroll = 2;
+        app.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE));
+        assert_eq!(app.session_scroll, 1);
+    }
+
+    #[test]
+    fn sessions_mode_detail_j_scrolls_down() {
+        let mut app = app_in_sessions_mode();
+        app.sessions_focus = SessionsPane::Detail;
+        app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+        assert_eq!(app.session_scroll, 1);
     }
 
     #[test]
