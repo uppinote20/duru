@@ -172,6 +172,39 @@ impl App {
         }
     }
 
+    pub fn refresh_sessions(&mut self, claude_dir: &Path) {
+        use crate::sessions::sort_entries;
+        self.session_cache.refresh(claude_dir);
+        let mut entries = self.session_cache.entries();
+        sort_entries(&mut entries, self.sessions_sort, chrono::Utc::now());
+        self.sessions = entries;
+        self.clamp_session_index();
+        self.last_refresh = Instant::now();
+    }
+
+    pub fn refresh_interval(&self) -> std::time::Duration {
+        use std::time::Duration;
+        if self.mode != AppMode::Sessions {
+            return Duration::from_secs(3600);
+        }
+        let now = chrono::Utc::now();
+        let has_recent = self
+            .sessions
+            .iter()
+            .any(|e| (now - e.last_activity).num_seconds() < 60);
+        if has_recent {
+            Duration::from_millis(1000)
+        } else {
+            Duration::from_millis(2000)
+        }
+    }
+
+    pub fn with_demo_sessions(mut self, demos: Vec<SessionEntry>) -> Self {
+        self.sessions = demos;
+        self.skip_real_refresh = true;
+        self
+    }
+
     fn sessions_move_up(&mut self) {
         match self.sessions_focus {
             SessionsPane::Table => {
@@ -469,6 +502,34 @@ mod tests {
         app.sessions.clear();
         app.clamp_session_index();
         assert_eq!(app.session_index, 0);
+    }
+
+    #[test]
+    fn refresh_interval_fast_when_activity_recent() {
+        let app = app_in_sessions_mode();
+        assert_eq!(
+            app.refresh_interval(),
+            std::time::Duration::from_millis(1000)
+        );
+    }
+
+    #[test]
+    fn refresh_interval_slow_when_all_idle() {
+        let mut app = app_in_sessions_mode();
+        let old = chrono::Utc::now() - chrono::Duration::hours(1);
+        for s in &mut app.sessions {
+            s.last_activity = old;
+        }
+        assert_eq!(
+            app.refresh_interval(),
+            std::time::Duration::from_millis(2000)
+        );
+    }
+
+    #[test]
+    fn refresh_interval_disabled_in_memory_mode() {
+        let app = App::new(make_test_projects());
+        assert!(app.refresh_interval() >= std::time::Duration::from_secs(60));
     }
 
     #[test]
