@@ -408,10 +408,20 @@ mod tests {
         assert_eq!(classify(&entry), RegistrySource::Terminated);
     }
 
+    #[cfg(unix)]
     #[test]
     fn classify_dead_pid_is_terminated() {
         let entry = sample_entry(30, false, Some(4_000_000));
         assert_eq!(classify(&entry), RegistrySource::Terminated);
+    }
+
+    #[cfg(not(unix))]
+    #[test]
+    fn classify_treats_any_pid_as_alive_on_non_unix() {
+        // Documented behavior: is_pid_alive is conservative on non-Unix,
+        // so classify cannot contribute a Terminated verdict from pid alone.
+        let entry = sample_entry(30, false, Some(4_000_000));
+        assert_eq!(classify(&entry), RegistrySource::Alive);
     }
 
     #[test]
