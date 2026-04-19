@@ -75,6 +75,34 @@ impl Registry {
             .and_then(|sid| self.by_session_id.get(sid))
     }
 
+    /// Deletes terminated entries whose `ended_at` is older than
+    /// `TERMINATED_TTL_SECS`. Alive entries are always kept. Delete failures
+    /// (permission, race) are silently skipped; caller retries next refresh.
+    pub fn cleanup_expired(claude_dir: &Path, now: DateTime<Utc>) {
+        let dir = claude_dir.join(REGISTRY_DIR_REL);
+        let Ok(read_dir) = fs::read_dir(&dir) else {
+            return;
+        };
+        for entry in read_dir.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            let Ok(bytes) = fs::read(&path) else { continue };
+            let Ok(parsed) = serde_json::from_slice::<RegistryEntry>(&bytes) else {
+                continue;
+            };
+            if !parsed.terminated {
+                continue;
+            }
+            let Some(ended) = parsed.ended_at else { continue };
+            let age = (now - ended).num_seconds();
+            if age > TERMINATED_TTL_SECS {
+                let _ = fs::remove_file(&path);
+            }
+        }
+    }
+
     /// Loads every well-formed `*.json` file under `<claude_dir>/duru/registry/`.
     /// Corrupt files, files with unknown schema_version, or files that fail
     /// deserialization are silently skipped — duru falls back to MVP1
@@ -250,6 +278,71 @@ mod tests {
         );
         let reg = Registry::load_all(tmp.path());
         assert!(reg.get_by_session_id("future").is_none());
+    }
+
+    fn write_entry_with_ended(
+        dir: &std::path::Path,
+        session_id: &str,
+        terminated: bool,
+        ended_at: Option<DateTime<Utc>>,
+    ) -> std::path::PathBuf {
+        let ended_str = match ended_at {
+            Some(t) => format!(r#","ended_at":"{}""#, t.to_rfc3339()),
+            None => String::new(),
+        };
+        let content = format!(
+            r#"{{
+                "schema_version": 1,
+                "session_id": "{sid}",
+                "cwd": "/tmp",
+                "transcript_path": "/tmp/{sid}.jsonl",
+                "started_at": "2026-04-20T00:00:00Z",
+                "last_heartbeat": "2026-04-20T00:00:00Z",
+                "terminated": {term}{ended}
+            }}"#,
+            sid = session_id,
+            term = terminated,
+            ended = ended_str
+        );
+        write_entry(dir, session_id, &content)
+    }
+
+    #[test]
+    fn cleanup_expired_removes_old_terminated() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join(REGISTRY_DIR_REL);
+        let long_ago = Utc::now() - chrono::Duration::days(10);
+        let path = write_entry_with_ended(&dir, "old", true, Some(long_ago));
+
+        Registry::cleanup_expired(tmp.path(), Utc::now());
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn cleanup_preserves_recent_terminated() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join(REGISTRY_DIR_REL);
+        let recent = Utc::now() - chrono::Duration::days(3);
+        let path = write_entry_with_ended(&dir, "recent", true, Some(recent));
+
+        Registry::cleanup_expired(tmp.path(), Utc::now());
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn cleanup_preserves_alive_entries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join(REGISTRY_DIR_REL);
+        let path = write_entry_with_ended(&dir, "alive", false, None);
+
+        Registry::cleanup_expired(tmp.path(), Utc::now());
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn cleanup_missing_dir_is_ok() {
+        let tmp = tempfile::tempdir().unwrap();
+        Registry::cleanup_expired(tmp.path(), Utc::now());
     }
 
     fn sample_entry(last_hb_secs_ago: i64, terminated: bool, pid: Option<u32>) -> RegistryEntry {
