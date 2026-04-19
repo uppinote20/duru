@@ -93,19 +93,36 @@ Press `Tab` to switch between two modes:
 
 **Sessions mode** uses a Table + Detail layout:
 
-- **Table** — 6 columns: state glyph, short ID, project, last activity, cache TTL, size
-- **Detail** — Fixed 8-row panel showing full session metadata
+- **Table** — 7 columns: state glyph, short ID, project, mode, last activity, cache TTL, size
+- **Detail** — Fixed 9-row panel showing full session metadata
 
-Cache TTL is shown as a hybrid `mm:ss ████▌·····` bar with color thresholds (green > 50%, yellow 20–50%, red < 20%).
+Cache TTL is shown as a hybrid `mm:ss ████▌·····` bar with color thresholds (green > 50%, yellow 20–50%, red < 20%). Mode is sourced from Claude Code hooks when installed; shows `—` otherwise.
 
 ### State glyph
 
 Two-state, aligned with Anthropic's 5-minute prompt-cache TTL:
 
-- `●` warm — last write within 5 min (cache likely still live on the server)
-- `○` cold — last write older than 5 min (cache expired; resuming pays a miss)
+- `●` warm — last write within 5 min or hook registry reports alive
+- `○` cold — last write over 5 min, or hook registry reports terminated / dead PID
 
-duru cannot tell from disk alone whether a session's Claude Code process is still running. `/clear`, `/exit`, or a killed terminal leave the transcript file on disk and duru classifies it only by mtime.
+## Hooks
+
+Run `duru hooks install` to add Claude Code event hooks to `~/.claude/settings.json`. From then on, duru shows accurate permission mode, real `/exit` detection, and PID-based liveness instead of just mtime inference.
+
+Requires `jq` on PATH (macOS: `brew install jq`; Debian/Ubuntu: `apt-get install jq`).
+
+```bash
+duru hooks install                # interactive, asks about starring on first run
+duru hooks install --yes          # non-interactive, skips star prompt
+duru hooks install --dry-run      # preview only, no changes
+duru hooks status                 # show installation state
+duru hooks uninstall              # remove duru entries, preserve others
+duru hooks uninstall --force      # also delete ~/.claude/duru/
+```
+
+Hooks write per-session state into `~/.claude/duru/registry/<session_id>.json`. Terminated sessions are retained for 7 days, then auto-pruned. Installation preserves any non-duru hooks already in `settings.json`.
+
+duru is safe to run without installing hooks — it falls back to mtime-based inference.
 
 ## Theme
 

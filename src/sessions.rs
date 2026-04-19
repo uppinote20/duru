@@ -8,6 +8,8 @@ use chrono::{DateTime, Utc};
 
 use crate::scan::decode_project_name;
 
+use crate::registry::RegistrySource;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionEntry {
     pub session_id: String,
@@ -18,6 +20,9 @@ pub struct SessionEntry {
     pub started_at: Option<DateTime<Utc>>,
     pub last_activity: DateTime<Utc>,
     pub file_size: u64,
+    pub permission_mode: Option<String>,
+    pub registry_source: Option<RegistrySource>,
+    pub is_alive: Option<bool>,
 }
 
 /// Two-state model aligned with Anthropic's 5-minute prompt cache TTL:
@@ -96,7 +101,18 @@ const SHORT_ID_LEN: usize = 8;
 /// when `~/.claude/projects` has thousands of historical transcripts.
 const LAZY_PARSE_CUTOFF_SECS: i64 = 86_400; // 24 h
 
+/// Classifies a session.
+///
+/// When a hook registry entry is available, its signals are authoritative:
+/// Terminated flag → Stale; dead pid → Stale. Otherwise falls back to the
+/// pure-mtime heuristic keyed on the 5-minute prompt-cache TTL.
 pub fn state_at(entry: &SessionEntry, now: DateTime<Utc>) -> State {
+    if let Some(RegistrySource::Terminated) = entry.registry_source {
+        return State::Stale;
+    }
+    if entry.is_alive == Some(false) {
+        return State::Stale;
+    }
     let elapsed = (now - entry.last_activity).num_seconds();
     if elapsed < TTL_SECS {
         State::Active
@@ -208,6 +224,54 @@ pub struct SessionCache {
     by_path: HashMap<PathBuf, (SessionEntry, SystemTime)>,
 }
 
+/// For each pid that appears on multiple Alive entries, keep the entry with
+/// the most recent `last_activity` as Alive; mark the others Terminated.
+/// Uses `(pid, started_at)` identity — entries with started_at more than
+/// 60s apart are treated as distinct processes (pid-reuse guard).
+pub(crate) fn dedup_same_pid(
+    entries: &mut std::collections::HashMap<PathBuf, (SessionEntry, SystemTime)>,
+    pid_lookup: &std::collections::HashMap<PathBuf, u32>,
+) {
+    use std::collections::HashMap;
+
+    let mut groups: HashMap<u32, Vec<PathBuf>> = HashMap::new();
+    for (path, (entry, _)) in entries.iter() {
+        if entry.registry_source != Some(RegistrySource::Alive) {
+            continue;
+        }
+        if let Some(&pid) = pid_lookup.get(path) {
+            groups.entry(pid).or_default().push(path.clone());
+        }
+    }
+
+    for (_, paths) in groups.iter().filter(|(_, p)| p.len() > 1) {
+        let latest = paths
+            .iter()
+            .max_by_key(|p| entries[*p].0.last_activity)
+            .cloned()
+            .unwrap();
+        let latest_started = entries[&latest].0.started_at;
+        for p in paths {
+            if *p == latest {
+                continue;
+            }
+            let this_started = entries[p].0.started_at;
+            // If either entry lacks started_at we fall through to the dedup
+            // (treat as same process). Very old transcripts from before hooks
+            // existed may have no started_at, so this can over-eagerly mark
+            // such entries Terminated — acceptable since they would be Stale
+            // by mtime anyway.
+            let close_enough = match (latest_started, this_started) {
+                (Some(a), Some(b)) => (a - b).num_seconds().abs() < 60,
+                _ => true,
+            };
+            if close_enough && let Some((e, _)) = entries.get_mut(p) {
+                e.registry_source = Some(RegistrySource::Terminated);
+            }
+        }
+    }
+}
+
 impl SessionCache {
     pub fn new() -> Self {
         Self::default()
@@ -218,6 +282,9 @@ impl SessionCache {
     }
 
     pub fn refresh(&mut self, claude_dir: &Path) {
+        use crate::registry::{self, Registry};
+
+        // 1. Collect transcript files and (re-)parse by mtime.
         let found = walk_session_files(claude_dir);
         let found_paths: std::collections::HashSet<PathBuf> =
             found.iter().map(|(p, _)| p.clone()).collect();
@@ -236,6 +303,31 @@ impl SessionCache {
                 self.by_path.insert(path.clone(), (entry, mtime));
             }
         }
+
+        // 2. Load registry and merge hook-sourced signals where paths match.
+        let reg = Registry::load_all(claude_dir);
+        let mut pid_lookup: std::collections::HashMap<PathBuf, u32> =
+            std::collections::HashMap::new();
+        for (path, (entry, _)) in self.by_path.iter_mut() {
+            if let Some(reg_entry) = reg.get_by_transcript_path(path) {
+                entry.permission_mode = reg_entry.permission_mode.clone();
+                entry.registry_source = Some(registry::classify(reg_entry));
+                entry.is_alive = reg_entry.pid.map(registry::is_pid_alive);
+                if let Some(pid) = reg_entry.pid {
+                    pid_lookup.insert(path.clone(), pid);
+                }
+            } else {
+                entry.permission_mode = None;
+                entry.registry_source = None;
+                entry.is_alive = None;
+            }
+        }
+
+        // 3. /clear detection: same pid on multiple alive entries → older → Terminated.
+        dedup_same_pid(&mut self.by_path, &pid_lookup);
+
+        // 4. Prune terminated entries older than TERMINATED_TTL_SECS.
+        Registry::cleanup_expired(claude_dir, chrono::Utc::now());
     }
 }
 
@@ -322,6 +414,9 @@ fn parse_session_at(path: &Path, now: DateTime<Utc>) -> Option<SessionEntry> {
         started_at: first.started_at,
         last_activity,
         file_size: meta.len(),
+        permission_mode: None,
+        registry_source: None,
+        is_alive: None,
     })
 }
 
@@ -348,6 +443,9 @@ pub fn demo_sessions() -> Vec<SessionEntry> {
             started_at: Some(last_activity - chrono::Duration::minutes(15)),
             last_activity,
             file_size: size,
+            permission_mode: None,
+            registry_source: None,
+            is_alive: None,
         }
     };
     vec![
@@ -478,6 +576,9 @@ mod tests {
             started_at: Some(last_activity),
             last_activity,
             file_size: 1000,
+            permission_mode: None,
+            registry_source: None,
+            is_alive: None,
         }
     }
 
@@ -486,6 +587,181 @@ mod tests {
         let now = Utc::now();
         let entry = make_entry("a", now - chrono::Duration::seconds(30));
         assert_eq!(state_at(&entry, now), State::Active);
+    }
+
+    #[test]
+    fn state_at_registry_terminated_overrides_mtime_recent() {
+        let now = Utc::now();
+        let mut entry = make_entry("x", now - chrono::Duration::seconds(30));
+        entry.registry_source = Some(RegistrySource::Terminated);
+        assert_eq!(state_at(&entry, now), State::Stale);
+    }
+
+    #[test]
+    fn state_at_registry_alive_uses_mtime() {
+        let now = Utc::now();
+        let mut entry = make_entry("x", now - chrono::Duration::seconds(30));
+        entry.registry_source = Some(RegistrySource::Alive);
+        assert_eq!(state_at(&entry, now), State::Active);
+    }
+
+    #[test]
+    fn state_at_dead_pid_overrides_mtime_recent() {
+        let now = Utc::now();
+        let mut entry = make_entry("x", now - chrono::Duration::seconds(30));
+        entry.is_alive = Some(false);
+        assert_eq!(state_at(&entry, now), State::Stale);
+    }
+
+    #[test]
+    fn state_at_no_registry_falls_back_to_mtime() {
+        let now = Utc::now();
+        let entry = make_entry("x", now - chrono::Duration::seconds(30));
+        assert_eq!(state_at(&entry, now), State::Active);
+    }
+
+    #[test]
+    fn dedup_same_pid_marks_older_as_terminated() {
+        use std::collections::HashMap;
+        use std::time::SystemTime;
+
+        let now = Utc::now();
+        let pid = 54321;
+        let mut entry_old = make_entry("old", now - chrono::Duration::minutes(5));
+        entry_old.started_at = Some(now - chrono::Duration::minutes(10));
+        entry_old.registry_source = Some(RegistrySource::Alive);
+        let mut entry_new = make_entry("new", now - chrono::Duration::seconds(30));
+        // started_at 30s apart from entry_old — within the 60s same-process window
+        entry_new.started_at = Some(now - chrono::Duration::seconds(10 * 60 - 30));
+        entry_new.registry_source = Some(RegistrySource::Alive);
+
+        let mut entries: HashMap<PathBuf, (SessionEntry, SystemTime)> = HashMap::new();
+        entries.insert(
+            PathBuf::from("/tmp/old.jsonl"),
+            (entry_old, SystemTime::UNIX_EPOCH),
+        );
+        entries.insert(
+            PathBuf::from("/tmp/new.jsonl"),
+            (entry_new, SystemTime::UNIX_EPOCH),
+        );
+
+        let mut pid_lookup: HashMap<PathBuf, u32> = HashMap::new();
+        pid_lookup.insert(PathBuf::from("/tmp/old.jsonl"), pid);
+        pid_lookup.insert(PathBuf::from("/tmp/new.jsonl"), pid);
+
+        dedup_same_pid(&mut entries, &pid_lookup);
+
+        assert_eq!(
+            entries[&PathBuf::from("/tmp/old.jsonl")].0.registry_source,
+            Some(RegistrySource::Terminated)
+        );
+        assert_eq!(
+            entries[&PathBuf::from("/tmp/new.jsonl")].0.registry_source,
+            Some(RegistrySource::Alive)
+        );
+    }
+
+    #[test]
+    fn dedup_ignores_different_pids() {
+        use std::collections::HashMap;
+        use std::time::SystemTime;
+
+        let now = Utc::now();
+        let mut a = make_entry("a", now);
+        a.registry_source = Some(RegistrySource::Alive);
+        let mut b = make_entry("b", now);
+        b.registry_source = Some(RegistrySource::Alive);
+
+        let mut entries: HashMap<PathBuf, (SessionEntry, SystemTime)> = HashMap::new();
+        entries.insert(PathBuf::from("/tmp/a.jsonl"), (a, SystemTime::UNIX_EPOCH));
+        entries.insert(PathBuf::from("/tmp/b.jsonl"), (b, SystemTime::UNIX_EPOCH));
+
+        let mut pid_lookup: HashMap<PathBuf, u32> = HashMap::new();
+        pid_lookup.insert(PathBuf::from("/tmp/a.jsonl"), 111);
+        pid_lookup.insert(PathBuf::from("/tmp/b.jsonl"), 222);
+
+        dedup_same_pid(&mut entries, &pid_lookup);
+
+        for (_, (e, _)) in entries.iter() {
+            assert_eq!(e.registry_source, Some(RegistrySource::Alive));
+        }
+    }
+
+    #[test]
+    fn dedup_ignores_same_pid_different_started_at() {
+        use std::collections::HashMap;
+        use std::time::SystemTime;
+
+        let now = Utc::now();
+        let pid = 77777;
+        let mut a = make_entry("a", now - chrono::Duration::seconds(30));
+        a.started_at = Some(now - chrono::Duration::hours(5));
+        a.registry_source = Some(RegistrySource::Alive);
+        let mut b = make_entry("b", now - chrono::Duration::seconds(10));
+        b.started_at = Some(now - chrono::Duration::seconds(20));
+        b.registry_source = Some(RegistrySource::Alive);
+
+        let mut entries: HashMap<PathBuf, (SessionEntry, SystemTime)> = HashMap::new();
+        entries.insert(PathBuf::from("/tmp/a.jsonl"), (a, SystemTime::UNIX_EPOCH));
+        entries.insert(PathBuf::from("/tmp/b.jsonl"), (b, SystemTime::UNIX_EPOCH));
+
+        let mut pid_lookup: HashMap<PathBuf, u32> = HashMap::new();
+        pid_lookup.insert(PathBuf::from("/tmp/a.jsonl"), pid);
+        pid_lookup.insert(PathBuf::from("/tmp/b.jsonl"), pid);
+
+        dedup_same_pid(&mut entries, &pid_lookup);
+
+        // started_at 5h apart → treat as different processes → both alive.
+        for (_, (e, _)) in entries.iter() {
+            assert_eq!(e.registry_source, Some(RegistrySource::Alive));
+        }
+    }
+
+    #[test]
+    fn cache_refresh_merges_registry_into_entry() {
+        use crate::registry::REGISTRY_DIR_REL;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let proj_dir = tmp.path().join("projects").join("-Users-test-proj");
+        fs::create_dir_all(&proj_dir).unwrap();
+        let uuid = "zzzz1111-2222-3333-4444-555566667777";
+        let jsonl = proj_dir.join(format!("{uuid}.jsonl"));
+        fs::write(
+            &jsonl,
+            r#"{"type":"user","timestamp":"2026-04-20T00:00:00Z"}"#,
+        )
+        .unwrap();
+
+        let reg_dir = tmp.path().join(REGISTRY_DIR_REL);
+        fs::create_dir_all(&reg_dir).unwrap();
+        fs::write(
+            reg_dir.join(format!("{uuid}.json")),
+            format!(
+                r#"{{
+                    "schema_version": 1,
+                    "session_id": "{uuid}",
+                    "cwd": "/tmp/test-proj",
+                    "transcript_path": "{}",
+                    "started_at": "2026-04-20T00:00:00Z",
+                    "last_heartbeat": "2026-04-20T00:00:30Z",
+                    "permission_mode": "auto",
+                    "terminated": false
+                }}"#,
+                jsonl.to_string_lossy()
+            ),
+        )
+        .unwrap();
+
+        let mut cache = SessionCache::new();
+        cache.refresh(tmp.path());
+
+        let entries = cache.entries();
+        let entry = entries
+            .iter()
+            .find(|e| e.session_id == uuid)
+            .expect("session entry should exist");
+        assert_eq!(entry.permission_mode.as_deref(), Some("auto"));
+        assert_eq!(entry.registry_source, Some(RegistrySource::Alive));
     }
 
     #[test]

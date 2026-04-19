@@ -15,6 +15,8 @@ use ratatui::{Terminal, backend::TestBackend, style::Color};
 mod app;
 #[path = "../src/markdown.rs"]
 mod markdown;
+#[path = "../src/registry.rs"]
+mod registry;
 #[path = "../src/scan.rs"]
 mod scan;
 #[path = "../src/sessions.rs"]
