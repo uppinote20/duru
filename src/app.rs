@@ -1,11 +1,24 @@
 use std::fs;
 use std::path::Path;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::scan::Project;
 use crate::sessions::{SessionCache, SessionEntry, SessionsSort};
+
+/// Sessions-mode refresh cadence when any session had activity in the last
+/// `RECENT_ACTIVITY_SECS` — snappy enough for TTL countdowns to feel live.
+pub const FAST_POLL_MS: u64 = 1000;
+
+/// Sessions-mode refresh cadence when everything is quiet; backs off to
+/// reduce filesystem churn while still catching new sessions within a second
+/// or two.
+pub const SLOW_POLL_MS: u64 = 2000;
+
+/// Threshold below which a session counts as "recent activity" for the
+/// refresh-interval decision.
+pub const RECENT_ACTIVITY_SECS: i64 = 60;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pane {
@@ -184,8 +197,7 @@ impl App {
         self.last_refresh = Instant::now();
     }
 
-    pub fn refresh_interval(&self) -> std::time::Duration {
-        use std::time::Duration;
+    pub fn refresh_interval(&self) -> Duration {
         if self.mode != AppMode::Sessions {
             return Duration::from_secs(3600);
         }
@@ -193,11 +205,11 @@ impl App {
         let has_recent = self
             .sessions
             .iter()
-            .any(|e| (now - e.last_activity).num_seconds() < 60);
+            .any(|e| (now - e.last_activity).num_seconds() < RECENT_ACTIVITY_SECS);
         if has_recent {
-            Duration::from_millis(1000)
+            Duration::from_millis(FAST_POLL_MS)
         } else {
-            Duration::from_millis(2000)
+            Duration::from_millis(SLOW_POLL_MS)
         }
     }
 
@@ -230,10 +242,7 @@ impl App {
                 }
             }
             SessionsPane::Detail => {
-                // Detail has 6 content lines rendered into a 6-row viewport
-                // (Length(8) minus 2 borders). Max meaningful scroll is 0
-                // until MVP2 adds more fields — j is a no-op here.
-                // Keep the arm so the binding is intentionally defined.
+                // Detail fits its 6-line content exactly — no scroll bound > 0.
             }
         }
     }
@@ -465,9 +474,7 @@ mod tests {
     }
 
     #[test]
-    fn sessions_mode_detail_j_is_bounded_to_zero_in_mvp1() {
-        // Detail has 6 content lines in a 6-row viewport, so max_scroll is 0.
-        // j is bound but effectively no-op until MVP2 adds more fields.
+    fn sessions_mode_detail_j_does_not_scroll_past_zero() {
         let mut app = app_in_sessions_mode();
         app.sessions_focus = SessionsPane::Detail;
         for _ in 0..20 {
@@ -557,10 +564,7 @@ mod tests {
     #[test]
     fn refresh_interval_fast_when_activity_recent() {
         let app = app_in_sessions_mode();
-        assert_eq!(
-            app.refresh_interval(),
-            std::time::Duration::from_millis(1000)
-        );
+        assert_eq!(app.refresh_interval(), Duration::from_millis(FAST_POLL_MS));
     }
 
     #[test]
@@ -570,16 +574,13 @@ mod tests {
         for s in &mut app.sessions {
             s.last_activity = old;
         }
-        assert_eq!(
-            app.refresh_interval(),
-            std::time::Duration::from_millis(2000)
-        );
+        assert_eq!(app.refresh_interval(), Duration::from_millis(SLOW_POLL_MS));
     }
 
     #[test]
     fn refresh_interval_disabled_in_memory_mode() {
         let app = App::new(make_test_projects());
-        assert!(app.refresh_interval() >= std::time::Duration::from_secs(60));
+        assert!(app.refresh_interval() >= Duration::from_secs(60));
     }
 
     #[test]

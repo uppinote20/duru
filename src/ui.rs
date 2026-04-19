@@ -11,7 +11,7 @@ use ratatui::{
 
 use crate::app::{App, AppMode, Pane, SessionsPane};
 use crate::markdown;
-use crate::sessions::{self, State};
+use crate::sessions::{self, PermissionMode, State};
 use crate::theme::Theme;
 
 pub fn render(frame: &mut Frame, app: &App, theme: &Theme) {
@@ -49,7 +49,11 @@ fn render_memory_layout(frame: &mut Frame, app: &App, theme: &Theme, area: Rect)
 }
 
 fn render_sessions_layout(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) {
-    let chunks = Layout::vertical([Constraint::Min(1), Constraint::Length(8)]).split(area);
+    let chunks = Layout::vertical([
+        Constraint::Min(1),
+        Constraint::Length(SESSION_DETAIL_HEIGHT),
+    ])
+    .split(area);
     render_sessions_table(frame, app, theme, chunks[0]);
     render_sessions_detail(frame, app, theme, chunks[1]);
 }
@@ -62,12 +66,9 @@ fn state_glyph(state: State, theme: &Theme) -> Span<'static> {
     }
 }
 
-fn mode_abbrev(mode: Option<&str>) -> &'static str {
+fn mode_abbrev(mode: Option<&PermissionMode>) -> &str {
     match mode {
-        Some("auto") => "auto",
-        Some("default") => "default",
-        Some("acceptEdits") => "accept",
-        Some(_) => "other",
+        Some(m) => m.abbrev(),
         None => "—",
     }
 }
@@ -80,16 +81,20 @@ fn relative_age(last: chrono::DateTime<chrono::Utc>, now: chrono::DateTime<chron
 fn render_sessions_table(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) {
     let focused = app.sessions_focus == SessionsPane::Table;
     let now = chrono::Utc::now();
-    let active = app
+
+    // One pass: compute per-entry state once; reuse for both the header
+    // counts and the row rendering. state_at is cheap but it's in the
+    // 100ms draw hot path × N rows × 3 callsites — collapse to one.
+    let states: Vec<State> = app
         .sessions
         .iter()
-        .filter(|e| sessions::state_at(e, now) == State::Active)
-        .count();
-    let idle = app
-        .sessions
-        .iter()
-        .filter(|e| sessions::state_at(e, now) == State::Idle)
-        .count();
+        .map(|e| sessions::state_at(e, now))
+        .collect();
+    let (active, idle) = states.iter().fold((0usize, 0usize), |(a, i), s| match s {
+        State::Active => (a + 1, i),
+        State::Idle => (a, i + 1),
+        State::Stale => (a, i),
+    });
     let title = format!("Sessions ({} active · {} idle)", active, idle);
     let block = pane_block(&title, focused, theme);
 
@@ -117,21 +122,21 @@ fn render_sessions_table(frame: &mut Frame, app: &App, theme: &Theme, area: Rect
     let rows: Vec<Row> = app
         .sessions
         .iter()
-        .map(|entry| {
-            let state = sessions::state_at(entry, now);
+        .zip(states.iter())
+        .map(|(entry, &state)| {
             let row_fg = match state {
                 State::Active => theme.text,
                 State::Idle => theme.muted,
                 State::Stale => theme.overlay,
             };
             let remaining = sessions::cache_ttl_remaining_secs(entry, now);
-            let project = sessions::middle_truncate(&entry.project_name, 22);
+            let project = sessions::middle_truncate(&entry.project_name, PROJECT_NAME_MAX_WIDTH);
 
             Row::new(vec![
                 Cell::from(Line::from(vec![Span::raw(" "), state_glyph(state, theme)])),
                 Cell::from(entry.short_id.clone()),
                 Cell::from(project),
-                Cell::from(mode_abbrev(entry.permission_mode.as_deref())),
+                Cell::from(mode_abbrev(entry.permission_mode.as_ref()).to_string()),
                 Cell::from(relative_age(entry.last_activity, now)),
                 render_ttl_cell(remaining, theme),
                 Cell::from(sessions::format_bytes(entry.file_size)),
@@ -206,7 +211,7 @@ fn render_sessions_detail(frame: &mut Frame, app: &App, theme: &Theme, area: Rec
         .unwrap_or_else(|| "—".to_string());
 
     let last_str = relative_age(entry.last_activity, now);
-    let mode_str = mode_abbrev(entry.permission_mode.as_deref());
+    let mode_str = mode_abbrev(entry.permission_mode.as_ref()).to_string();
 
     let lines = vec![
         Line::from(vec![
@@ -377,41 +382,55 @@ fn render_preview_pane(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) 
 }
 
 fn render_help_bar(frame: &mut Frame, mode: AppMode, theme: &Theme, area: Rect) {
-    let help = match mode {
-        AppMode::Memory => Line::from(vec![
-            Span::styled(" ↑↓", Style::default().fg(theme.text)),
-            Span::styled(" navigate  ", Style::default().fg(theme.muted)),
-            Span::styled("←→", Style::default().fg(theme.text)),
-            Span::styled(" pane  ", Style::default().fg(theme.muted)),
-            Span::styled("e", Style::default().fg(theme.text)),
-            Span::styled(" edit  ", Style::default().fg(theme.muted)),
-            Span::styled("Tab", Style::default().fg(theme.text)),
-            Span::styled(" sessions  ", Style::default().fg(theme.muted)),
-            Span::styled("q", Style::default().fg(theme.text)),
-            Span::styled(" quit", Style::default().fg(theme.muted)),
-        ]),
-        AppMode::Sessions => Line::from(vec![
-            Span::styled(" ↑↓", Style::default().fg(theme.text)),
-            Span::styled(" navigate  ", Style::default().fg(theme.muted)),
-            Span::styled("←→", Style::default().fg(theme.text)),
-            Span::styled(" pane  ", Style::default().fg(theme.muted)),
-            Span::styled("s", Style::default().fg(theme.text)),
-            Span::styled(" sort  ", Style::default().fg(theme.muted)),
-            Span::styled("r", Style::default().fg(theme.text)),
-            Span::styled(" refresh  ", Style::default().fg(theme.muted)),
-            Span::styled("Tab", Style::default().fg(theme.text)),
-            Span::styled(" memory  ", Style::default().fg(theme.muted)),
-            Span::styled("q", Style::default().fg(theme.text)),
-            Span::styled(" quit", Style::default().fg(theme.muted)),
-        ]),
+    let entries: &[(&str, &str)] = match mode {
+        AppMode::Memory => &[
+            ("↑↓", "navigate"),
+            ("←→", "pane"),
+            ("e", "edit"),
+            ("Tab", "sessions"),
+            ("q", "quit"),
+        ],
+        AppMode::Sessions => &[
+            ("↑↓", "navigate"),
+            ("←→", "pane"),
+            ("s", "sort"),
+            ("r", "refresh"),
+            ("Tab", "memory"),
+            ("q", "quit"),
+        ],
     };
+
+    let mut spans = Vec::with_capacity(entries.len() * 2);
+    for (i, (key, label)) in entries.iter().enumerate() {
+        let prefix = if i == 0 { " " } else { "" };
+        spans.push(Span::styled(
+            format!("{prefix}{key}"),
+            Style::default().fg(theme.text),
+        ));
+        spans.push(Span::styled(
+            format!(" {label}  "),
+            Style::default().fg(theme.muted),
+        ));
+    }
+
     frame.render_widget(
-        Paragraph::new(help).style(Style::default().bg(theme.surface)),
+        Paragraph::new(Line::from(spans)).style(Style::default().bg(theme.surface)),
         area,
     );
 }
 
 const TTL_BAR_WIDTH: usize = 8;
+
+/// Height of the Sessions-mode detail panel (includes 2 border rows).
+const SESSION_DETAIL_HEIGHT: u16 = 8;
+
+/// Max width the Project column renders before middle-truncating.
+const PROJECT_NAME_MAX_WIDTH: usize = 22;
+
+/// Cache-TTL color thresholds. Remaining-ratio above WARN → green, between
+/// CRIT and WARN → yellow, below CRIT → red + BOLD.
+const TTL_WARN_RATIO: f64 = 0.5;
+const TTL_CRIT_RATIO: f64 = 0.2;
 
 pub(crate) fn ttl_cell_parts(remaining_secs: i64, theme: &Theme) -> (String, Color) {
     if remaining_secs <= 0 {
@@ -422,9 +441,9 @@ pub(crate) fn ttl_cell_parts(remaining_secs: i64, theme: &Theme) -> (String, Col
     let ratio = remaining_secs as f64 / sessions::TTL_SECS as f64;
     let filled = (ratio * TTL_BAR_WIDTH as f64).round() as usize;
     let filled = filled.min(TTL_BAR_WIDTH);
-    let color = if ratio > 0.5 {
+    let color = if ratio > TTL_WARN_RATIO {
         theme.pine
-    } else if ratio > 0.2 {
+    } else if ratio > TTL_CRIT_RATIO {
         theme.gold
     } else {
         theme.love

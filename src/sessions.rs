@@ -9,6 +9,35 @@ use chrono::{DateTime, Utc};
 use crate::scan::decode_project_name;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PermissionMode {
+    Auto,
+    Default,
+    AcceptEdits,
+    Other(String),
+}
+
+impl PermissionMode {
+    pub fn parse(raw: &str) -> Self {
+        match raw {
+            "auto" => Self::Auto,
+            "default" => Self::Default,
+            "acceptEdits" => Self::AcceptEdits,
+            other => Self::Other(other.to_string()),
+        }
+    }
+
+    /// Short label for the Sessions-table `Mode` column (max 7 chars).
+    pub fn abbrev(&self) -> &str {
+        match self {
+            Self::Auto => "auto",
+            Self::Default => "default",
+            Self::AcceptEdits => "accept",
+            Self::Other(_) => "other",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionEntry {
     pub session_id: String,
     pub short_id: String,
@@ -17,7 +46,7 @@ pub struct SessionEntry {
     pub transcript_path: PathBuf,
     pub started_at: Option<DateTime<Utc>>,
     pub last_activity: DateTime<Utc>,
-    pub permission_mode: Option<String>,
+    pub permission_mode: Option<PermissionMode>,
     pub has_termination_record: bool,
     pub file_size: u64,
 }
@@ -39,7 +68,7 @@ pub enum SessionsSort {
 }
 
 pub fn short_id(uuid: &str) -> String {
-    uuid.chars().take(8).collect()
+    uuid.chars().take(SHORT_ID_LEN).collect()
 }
 
 pub fn format_duration(secs: i64) -> String {
@@ -78,10 +107,21 @@ pub fn middle_truncate(s: &str, max: usize) -> String {
 
 /// Anthropic's default prompt cache TTL in seconds (5 minutes).
 ///
-/// This is the canonical source; `ui::render_ttl_cell` imports it for the
-/// progress-bar denominator. The `State::Active` window is aligned with this
-/// value so "Active" visually signals "cache likely still warm".
+/// Canonical source; `ui::render_ttl_cell` imports it as the bar denominator.
+/// The `State::Active` window is aligned with this value so "Active" visually
+/// signals "cache likely still warm".
 pub const TTL_SECS: i64 = 300;
+
+/// Boundary between `State::Idle` and `State::Stale` (1 hour).
+pub const IDLE_CUTOFF_SECS: i64 = 3600;
+
+/// First N lines of a transcript scanned to extract session_id / permission /
+/// started_at / cwd. Enough to skip past `file-history-snapshot` records
+/// that sometimes precede the `permission-mode` row.
+const FIRST_RECORD_SCAN_LINES: usize = 10;
+
+/// Short-form session ID length (first N chars of the UUID).
+const SHORT_ID_LEN: usize = 8;
 
 pub fn state_at(entry: &SessionEntry, now: DateTime<Utc>) -> State {
     if entry.has_termination_record {
@@ -90,7 +130,7 @@ pub fn state_at(entry: &SessionEntry, now: DateTime<Utc>) -> State {
     let elapsed = (now - entry.last_activity).num_seconds();
     if elapsed < TTL_SECS {
         State::Active
-    } else if elapsed < 3600 {
+    } else if elapsed < IDLE_CUTOFF_SECS {
         State::Idle
     } else {
         State::Stale
@@ -105,7 +145,7 @@ pub fn cache_ttl_remaining_secs(entry: &SessionEntry, now: DateTime<Utc>) -> i64
 #[derive(Debug, Default, Clone)]
 pub struct FirstRecord {
     pub session_id: Option<String>,
-    pub permission_mode: Option<String>,
+    pub permission_mode: Option<PermissionMode>,
     pub started_at: Option<DateTime<Utc>>,
     pub cwd: Option<String>,
 }
@@ -114,7 +154,11 @@ pub fn parse_first_record<R: Read>(reader: R) -> FirstRecord {
     let buf = BufReader::new(reader);
     let mut out = FirstRecord::default();
 
-    for line in buf.lines().take(10).map_while(Result::ok) {
+    for line in buf
+        .lines()
+        .take(FIRST_RECORD_SCAN_LINES)
+        .map_while(Result::ok)
+    {
         if line.trim().is_empty() {
             continue;
         }
@@ -130,7 +174,7 @@ pub fn parse_first_record<R: Read>(reader: R) -> FirstRecord {
             && value.get("type").and_then(|v| v.as_str()) == Some("permission-mode")
             && let Some(mode) = value.get("permissionMode").and_then(|v| v.as_str())
         {
-            out.permission_mode = Some(mode.to_string());
+            out.permission_mode = Some(PermissionMode::parse(mode));
         }
         if out.started_at.is_none()
             && let Some(ts) = value.get("timestamp").and_then(|v| v.as_str())
@@ -175,13 +219,12 @@ pub fn parse_tail(path: &Path) -> std::io::Result<TailRecord> {
     let reader = BufReader::new(file);
     let mut lines = reader.lines().map_while(Result::ok);
 
-    // When we seeked into the middle of the file, the first line is likely a
-    // partial record — discard it. Using a single BufReader here is critical:
-    // `BufReader::new(&mut file)` would fill its internal 8 KiB buffer in one
-    // `read()` syscall, advancing the OS file position to EOF; a subsequent
-    // BufReader on the same file would then read nothing. See PR #8 review.
+    // Single BufReader is required: a second BufReader on the same File would
+    // share the OS file offset. The first fill_buf drains up to 8 KiB in one
+    // read() syscall, leaving the offset at EOF; a fresh BufReader would then
+    // yield nothing.
     if skip_first {
-        lines.next();
+        lines.next(); // potentially-partial first line from mid-file seek
     }
 
     for line in lines {
@@ -341,7 +384,7 @@ pub fn demo_sessions() -> Vec<SessionEntry> {
                 transcript_path: PathBuf::from(format!("/tmp/duru-demo/{id}.jsonl")),
                 started_at: Some(last_activity - chrono::Duration::minutes(15)),
                 last_activity,
-                permission_mode: Some(mode.to_string()),
+                permission_mode: Some(PermissionMode::parse(mode)),
                 has_termination_record: last_prompt,
                 file_size: size,
             }
@@ -492,7 +535,7 @@ mod tests {
             transcript_path: PathBuf::from(format!("/tmp/{id}.jsonl")),
             started_at: Some(last_activity),
             last_activity,
-            permission_mode: Some("auto".to_string()),
+            permission_mode: Some(PermissionMode::Auto),
             has_termination_record,
             file_size: 1000,
         }
@@ -742,7 +785,7 @@ mod tests {
             parsed.session_id.as_deref(),
             Some("676b2e79-2ee5-4a7b-8cd3-2a5034cac2e6")
         );
-        assert_eq!(parsed.permission_mode.as_deref(), Some("auto"));
+        assert_eq!(parsed.permission_mode, Some(PermissionMode::Auto));
     }
 
     #[test]
@@ -755,7 +798,7 @@ mod tests {
         );
         let parsed = parse_first_record(content.as_bytes());
         assert_eq!(parsed.session_id.as_deref(), Some("abc123"));
-        assert_eq!(parsed.permission_mode.as_deref(), Some("default"));
+        assert_eq!(parsed.permission_mode, Some(PermissionMode::Default));
     }
 
     #[test]
