@@ -234,6 +234,9 @@ impl SessionCache {
     }
 
     pub fn refresh(&mut self, claude_dir: &Path) {
+        use crate::registry::{self, Registry};
+
+        // 1. Collect transcript files and (re-)parse by mtime.
         let found = walk_session_files(claude_dir);
         let found_paths: std::collections::HashSet<PathBuf> =
             found.iter().map(|(p, _)| p.clone()).collect();
@@ -252,6 +255,23 @@ impl SessionCache {
                 self.by_path.insert(path.clone(), (entry, mtime));
             }
         }
+
+        // 2. Load registry and merge hook-sourced signals where paths match.
+        let reg = Registry::load_all(claude_dir);
+        for (path, (entry, _)) in self.by_path.iter_mut() {
+            if let Some(reg_entry) = reg.get_by_transcript_path(path) {
+                entry.permission_mode = reg_entry.permission_mode.clone();
+                entry.registry_source = Some(registry::classify(reg_entry));
+                entry.is_alive = reg_entry.pid.map(registry::is_pid_alive);
+            } else {
+                entry.permission_mode = None;
+                entry.registry_source = None;
+                entry.is_alive = None;
+            }
+        }
+
+        // 3. Prune terminated entries older than TERMINATED_TTL_SECS.
+        Registry::cleanup_expired(claude_dir, chrono::Utc::now());
     }
 }
 
@@ -542,6 +562,53 @@ mod tests {
         let now = Utc::now();
         let entry = make_entry("x", now - chrono::Duration::seconds(30));
         assert_eq!(state_at(&entry, now), State::Active);
+    }
+
+    #[test]
+    fn cache_refresh_merges_registry_into_entry() {
+        use crate::registry::REGISTRY_DIR_REL;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let proj_dir = tmp.path().join("projects").join("-Users-test-proj");
+        fs::create_dir_all(&proj_dir).unwrap();
+        let uuid = "zzzz1111-2222-3333-4444-555566667777";
+        let jsonl = proj_dir.join(format!("{uuid}.jsonl"));
+        fs::write(
+            &jsonl,
+            r#"{"type":"user","timestamp":"2026-04-20T00:00:00Z"}"#,
+        )
+        .unwrap();
+
+        let reg_dir = tmp.path().join(REGISTRY_DIR_REL);
+        fs::create_dir_all(&reg_dir).unwrap();
+        fs::write(
+            reg_dir.join(format!("{uuid}.json")),
+            format!(
+                r#"{{
+                    "schema_version": 1,
+                    "session_id": "{uuid}",
+                    "cwd": "/tmp/test-proj",
+                    "transcript_path": "{}",
+                    "started_at": "2026-04-20T00:00:00Z",
+                    "last_heartbeat": "2026-04-20T00:00:30Z",
+                    "permission_mode": "auto",
+                    "terminated": false
+                }}"#,
+                jsonl.to_string_lossy()
+            ),
+        )
+        .unwrap();
+
+        let mut cache = SessionCache::new();
+        cache.refresh(tmp.path());
+
+        let entries = cache.entries();
+        let entry = entries
+            .iter()
+            .find(|e| e.session_id == uuid)
+            .expect("session entry should exist");
+        assert_eq!(entry.permission_mode.as_deref(), Some("auto"));
+        assert_eq!(entry.registry_source, Some(RegistrySource::Alive));
     }
 
     #[test]
