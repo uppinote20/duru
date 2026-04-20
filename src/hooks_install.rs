@@ -238,18 +238,24 @@ fn try_star() {
         .unwrap_or(false);
     if !auth_ok {
         println!("gh is installed but not authenticated. Run `gh auth login`,");
-        println!("then: gh repo star uppinote20/duru");
+        println!("then star manually at https://github.com/uppinote20/duru");
         return;
     }
     let star_ok = Command::new("gh")
-        .args(["repo", "star", "uppinote20/duru"])
-        .status()
-        .map(|s| s.success())
+        .args([
+            "api",
+            "--method",
+            "PUT",
+            "--silent",
+            "/user/starred/uppinote20/duru",
+        ])
+        .output()
+        .map(|o| o.status.success())
         .unwrap_or(false);
     if star_ok {
         println!("★ Thanks!");
     } else {
-        println!("  (gh repo star failed — star manually at https://github.com/uppinote20/duru)");
+        println!("  (star failed — star manually at https://github.com/uppinote20/duru)");
     }
 }
 
