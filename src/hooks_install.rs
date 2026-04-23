@@ -26,6 +26,9 @@ pub const EVENTS: &[&str] = &[
     "SessionEnd",
 ];
 
+/// Number of `settings.json.duru.bak.*` files to retain after install/uninstall.
+const BACKUP_KEEP_COUNT: usize = 2;
+
 fn script_filename(event: &str) -> &'static str {
     match event {
         "SessionStart" => "session-start.sh",
@@ -213,7 +216,7 @@ fn merge_settings(home: &Path) -> std::io::Result<()> {
     fs::write(&tmp, &result.stdout)?;
     fs::rename(&tmp, &settings)?;
 
-    prune_backups(home, 2);
+    prune_backups(home, BACKUP_KEEP_COUNT);
 
     Ok(())
 }
@@ -455,7 +458,7 @@ pub fn uninstall(home: &Path, opts: &UninstallOpts) -> std::io::Result<()> {
     fs::write(&tmp, &result.stdout)?;
     fs::rename(&tmp, &settings)?;
 
-    prune_backups(home, 2);
+    prune_backups(home, BACKUP_KEEP_COUNT);
 
     if opts.force {
         let _ = fs::remove_dir_all(duru_dir(home));
@@ -809,7 +812,13 @@ mod tests {
         fs::write(settings_path(home.path()), r#"{"hooks":{}}"#).unwrap();
         // Seed 5 stale backups with synthetic epoch suffixes.
         let claude_dir = home.path().join(".claude");
-        for epoch in [1700000000u64, 1700000001, 1700000002, 1700000003, 1700000004] {
+        for epoch in [
+            1700000000u64,
+            1700000001,
+            1700000002,
+            1700000003,
+            1700000004,
+        ] {
             fs::write(
                 claude_dir.join(format!("settings.json.duru.bak.{epoch}")),
                 "stale",
@@ -820,7 +829,11 @@ mod tests {
         install(home.path(), &opts_install_silent()).unwrap();
 
         let backups = list_backups(home.path());
-        assert_eq!(backups.len(), 2, "expected exactly 2 backups, got {backups:?}");
+        assert_eq!(
+            backups.len(),
+            2,
+            "expected exactly 2 backups, got {backups:?}"
+        );
         // The newly-created backup has a current (much larger) epoch, so the
         // newest seeded backup is the second survivor.
         assert!(
@@ -851,7 +864,20 @@ mod tests {
         uninstall(home.path(), &opts_uninstall_silent()).unwrap();
 
         let backups = list_backups(home.path());
-        assert_eq!(backups.len(), 2, "expected exactly 2 backups, got {backups:?}");
+        assert_eq!(
+            backups.len(),
+            2,
+            "expected exactly 2 backups, got {backups:?}"
+        );
+        // Newest seeded survives alongside the uninstall-created backup.
+        assert!(
+            backups.iter().any(|n| n.ends_with(".1700000003")),
+            "newest seeded backup should survive: {backups:?}"
+        );
+        assert!(
+            !backups.iter().any(|n| n.ends_with(".1700000000")),
+            "oldest seeded backup should have been pruned: {backups:?}"
+        );
     }
 
     #[test]
