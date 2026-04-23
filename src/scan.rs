@@ -330,6 +330,7 @@ mod tests {
         assert_eq!(projects[0].files[0].kind, FileKind::GlobalClaudeMd);
     }
 
+    #[cfg(unix)]
     #[test]
     fn scan_finds_project_files() {
         let (_tmp, claude_dir) = create_test_dir();

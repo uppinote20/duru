@@ -779,6 +779,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn cache_refresh_merges_registry_into_entry() {
         use crate::registry::REGISTRY_DIR_REL;
