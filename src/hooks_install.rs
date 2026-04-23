@@ -26,6 +26,11 @@ pub const EVENTS: &[&str] = &[
     "SessionEnd",
 ];
 
+/// Filename prefix for timestamped settings.json backups in `~/.claude/`.
+/// Backup creation (`backup_settings`) and pruning (`prune_backups`) both
+/// rely on this — keep them in sync via this single source of truth.
+const BACKUP_PREFIX: &str = "settings.json.duru.bak.";
+
 /// Number of `settings.json.duru.bak.*` files to retain after install/uninstall.
 const BACKUP_KEEP_COUNT: usize = 2;
 
@@ -78,6 +83,18 @@ fn chmod_executable(_path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Copy `settings` to a timestamped backup file in `~/.claude/`. The epoch
+/// suffix is the Unix timestamp in seconds; collisions within the same second
+/// overwrite the prior backup (acceptable — same content).
+fn backup_settings(home: &Path, settings: &Path) -> std::io::Result<()> {
+    let epoch = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let backup = home.join(".claude").join(format!("{BACKUP_PREFIX}{epoch}"));
+    fs::copy(settings, backup).map(|_| ())
+}
+
 /// Keep only the `keep` most recent `settings.json.duru.bak.<epoch>` files
 /// in `~/.claude/`. Best-effort: read or delete failures are swallowed so a
 /// transient FS hiccup doesn't break install/uninstall. Lexical sort is
@@ -93,7 +110,7 @@ fn prune_backups(home: &Path, keep: usize) {
         .filter(|p| {
             p.file_name()
                 .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with("settings.json.duru.bak."))
+                .is_some_and(|n| n.starts_with(BACKUP_PREFIX))
         })
         .collect();
     if backups.len() <= keep {
@@ -149,15 +166,8 @@ fn merge_settings(home: &Path) -> std::io::Result<()> {
     let settings = settings_path(home);
     let hooks_dir_p = hooks_dir(home);
 
-    let backup_name = format!(
-        "settings.json.duru.bak.{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs()
-    );
     if settings.exists() {
-        fs::copy(&settings, home.join(".claude").join(&backup_name))?;
+        backup_settings(home, &settings)?;
     }
 
     // Build a jq expression that, for each event:
@@ -417,14 +427,7 @@ pub fn uninstall(home: &Path, opts: &UninstallOpts) -> std::io::Result<()> {
         return Ok(());
     }
 
-    let backup_name = format!(
-        "settings.json.duru.bak.{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs()
-    );
-    fs::copy(&settings, home.join(".claude").join(&backup_name))?;
+    backup_settings(home, &settings)?;
 
     let input = fs::read_to_string(&settings)?;
     let filter_expr = r#"
@@ -598,17 +601,7 @@ mod tests {
         let home = fake_home();
         fs::write(settings_path(home.path()), r#"{"hooks":{}}"#).unwrap();
         install(home.path(), &opts_install_silent()).unwrap();
-        let claude_dir = home.path().join(".claude");
-        let backups: Vec<_> = fs::read_dir(&claude_dir)
-            .unwrap()
-            .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.file_name()
-                    .to_string_lossy()
-                    .starts_with("settings.json.duru.bak.")
-            })
-            .collect();
-        assert_eq!(backups.len(), 1);
+        assert_eq!(list_backups(home.path()).len(), 1);
     }
 
     fn opts_uninstall_silent() -> UninstallOpts {
@@ -799,9 +792,16 @@ mod tests {
             .flatten()
             .filter_map(|e| {
                 let name = e.file_name().to_string_lossy().into_owned();
-                name.starts_with("settings.json.duru.bak.").then_some(name)
+                name.starts_with(BACKUP_PREFIX).then_some(name)
             })
             .collect()
+    }
+
+    fn seed_backups(home: &Path, epochs: &[u64]) {
+        let claude_dir = home.join(".claude");
+        for &epoch in epochs {
+            fs::write(claude_dir.join(format!("{BACKUP_PREFIX}{epoch}")), "stale").unwrap();
+        }
     }
 
     #[test]
@@ -810,21 +810,10 @@ mod tests {
         // Pre-existing settings.json forces merge_settings() to create a
         // fresh backup during install.
         fs::write(settings_path(home.path()), r#"{"hooks":{}}"#).unwrap();
-        // Seed 5 stale backups with synthetic epoch suffixes.
-        let claude_dir = home.path().join(".claude");
-        for epoch in [
-            1700000000u64,
-            1700000001,
-            1700000002,
-            1700000003,
-            1700000004,
-        ] {
-            fs::write(
-                claude_dir.join(format!("settings.json.duru.bak.{epoch}")),
-                "stale",
-            )
-            .unwrap();
-        }
+        seed_backups(
+            home.path(),
+            &[1700000000, 1700000001, 1700000002, 1700000003, 1700000004],
+        );
 
         install(home.path(), &opts_install_silent()).unwrap();
 
@@ -834,7 +823,7 @@ mod tests {
             2,
             "expected exactly 2 backups, got {backups:?}"
         );
-        // The newly-created backup has a current (much larger) epoch, so the
+        // Install-created backup has a current (much larger) epoch, so the
         // newest seeded backup is the second survivor.
         assert!(
             backups.iter().any(|n| n.ends_with(".1700000004")),
@@ -850,16 +839,10 @@ mod tests {
     fn uninstall_prunes_old_backups_keeping_two() {
         let home = fake_home();
         install(home.path(), &opts_install_silent()).unwrap();
-        // Seed 4 stale backups to guarantee pruning crosses the keep=2 threshold
-        // once uninstall creates its own backup.
-        let claude_dir = home.path().join(".claude");
-        for epoch in [1700000000u64, 1700000001, 1700000002, 1700000003] {
-            fs::write(
-                claude_dir.join(format!("settings.json.duru.bak.{epoch}")),
-                "stale",
-            )
-            .unwrap();
-        }
+        seed_backups(
+            home.path(),
+            &[1700000000, 1700000001, 1700000002, 1700000003],
+        );
 
         uninstall(home.path(), &opts_uninstall_silent()).unwrap();
 
@@ -869,7 +852,6 @@ mod tests {
             2,
             "expected exactly 2 backups, got {backups:?}"
         );
-        // Newest seeded survives alongside the uninstall-created backup.
         assert!(
             backups.iter().any(|n| n.ends_with(".1700000003")),
             "newest seeded backup should survive: {backups:?}"
@@ -883,14 +865,7 @@ mod tests {
     #[test]
     fn prune_backups_is_noop_when_under_threshold() {
         let home = fake_home();
-        let claude_dir = home.path().join(".claude");
-        for epoch in [1700000000u64, 1700000001] {
-            fs::write(
-                claude_dir.join(format!("settings.json.duru.bak.{epoch}")),
-                "x",
-            )
-            .unwrap();
-        }
+        seed_backups(home.path(), &[1700000000, 1700000001]);
         prune_backups(home.path(), 2);
         assert_eq!(list_backups(home.path()).len(), 2);
     }
@@ -902,14 +877,10 @@ mod tests {
         fs::write(claude_dir.join("settings.json"), "{}").unwrap();
         fs::write(claude_dir.join("settings.json.duru.tmp"), "tmp").unwrap();
         fs::write(claude_dir.join("unrelated.txt"), "x").unwrap();
-        for epoch in [1700000000u64, 1700000001, 1700000002] {
-            fs::write(
-                claude_dir.join(format!("settings.json.duru.bak.{epoch}")),
-                "x",
-            )
-            .unwrap();
-        }
+        seed_backups(home.path(), &[1700000000, 1700000001, 1700000002]);
+
         prune_backups(home.path(), 2);
+
         assert_eq!(list_backups(home.path()).len(), 2);
         assert!(claude_dir.join("settings.json").exists());
         assert!(claude_dir.join("settings.json.duru.tmp").exists());
