@@ -1,4 +1,6 @@
 use ratatui::style::Color;
+
+#[cfg(unix)]
 use terminal_colorsaurus::{QueryOptions, ThemeMode as DetectedThemeMode, theme_mode};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,12 +69,21 @@ impl Theme {
         }
     }
 
+    #[cfg(unix)]
     fn detect() -> Self {
         // OSC 10/11 query; falls back to Dark if no TTY or unsupported terminal.
         match theme_mode(QueryOptions::default()) {
             Ok(DetectedThemeMode::Light) => Self::light(),
             Ok(DetectedThemeMode::Dark) | Err(_) => Self::dark(),
         }
+    }
+
+    #[cfg(not(unix))]
+    fn detect() -> Self {
+        // Windows: `terminal-colorsaurus` is Unix-scoped in Cargo.toml (its OSC
+        // query relies on UNIX terminal semantics). Default to Dark; users can
+        // force the other mode with `--theme light`.
+        Self::dark()
     }
 }
 
