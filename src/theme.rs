@@ -1,4 +1,5 @@
 use ratatui::style::Color;
+use terminal_colorsaurus::{QueryOptions, ThemeMode as DetectedThemeMode, theme_mode};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThemeMode {
@@ -67,14 +68,10 @@ impl Theme {
     }
 
     fn detect() -> Self {
-        // OSC 10/11 query covers modern terminals (Alacritty, Kitty, WezTerm,
-        // Ghostty, foot, GNOME/VTE, Terminal.app) where COLORFGBG is unset.
-        // Falls back to Dark on detection failure (no TTY, query timeout,
-        // unsupported terminal) — matches the prior behavior.
-        use terminal_colorsaurus::{QueryOptions, ThemeMode as Detected, theme_mode};
+        // OSC 10/11 query; falls back to Dark if no TTY or unsupported terminal.
         match theme_mode(QueryOptions::default()) {
-            Ok(Detected::Light) => Self::light(),
-            Ok(Detected::Dark) | Err(_) => Self::dark(),
+            Ok(DetectedThemeMode::Light) => Self::light(),
+            Ok(DetectedThemeMode::Dark) | Err(_) => Self::dark(),
         }
     }
 }
@@ -104,5 +101,13 @@ mod tests {
 
         let light = Theme::from_option(Some("light"));
         assert_eq!(light.mode, ThemeMode::Light);
+    }
+
+    #[test]
+    fn from_option_none_does_not_panic() {
+        // Smoke test: detection runs in test harness with no TTY; we don't
+        // assert which mode wins, only that the call returns a valid Theme.
+        let theme = Theme::from_option(None);
+        assert!(matches!(theme.mode, ThemeMode::Dark | ThemeMode::Light));
     }
 }
