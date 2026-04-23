@@ -546,7 +546,11 @@ pub fn sort_entries(
         }
         SessionsSort::Project => {
             entries.sort_by(|a, b| {
-                order(a.project_name.to_lowercase().cmp(&b.project_name.to_lowercase()))
+                order(
+                    a.project_name
+                        .to_lowercase()
+                        .cmp(&b.project_name.to_lowercase()),
+                )
             });
         }
         SessionsSort::Size => {
@@ -1125,9 +1129,18 @@ mod tests {
 
     #[test]
     fn sessions_sort_default_direction_per_field() {
-        assert_eq!(SessionsSort::LastActivity.default_direction(), SortDirection::Desc);
-        assert_eq!(SessionsSort::CacheTtl.default_direction(), SortDirection::Asc);
-        assert_eq!(SessionsSort::Project.default_direction(), SortDirection::Asc);
+        assert_eq!(
+            SessionsSort::LastActivity.default_direction(),
+            SortDirection::Desc
+        );
+        assert_eq!(
+            SessionsSort::CacheTtl.default_direction(),
+            SortDirection::Asc
+        );
+        assert_eq!(
+            SessionsSort::Project.default_direction(),
+            SortDirection::Asc
+        );
         assert_eq!(SessionsSort::Size.default_direction(), SortDirection::Desc);
     }
 

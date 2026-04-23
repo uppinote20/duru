@@ -560,7 +560,10 @@ mod tests {
         app.sort_reverse = true;
         app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
         assert_eq!(app.sessions_sort, SessionsSort::CacheTtl);
-        assert!(app.sort_reverse, "cycling sort must not clear the reverse flag");
+        assert!(
+            app.sort_reverse,
+            "cycling sort must not clear the reverse flag"
+        );
     }
 
     #[test]
