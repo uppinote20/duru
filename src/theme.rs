@@ -67,16 +67,15 @@ impl Theme {
     }
 
     fn detect() -> Self {
-        // Check COLORFGBG env var: "foreground;background"
-        // Background >= 8 usually means light theme
-        if let Ok(val) = std::env::var("COLORFGBG")
-            && let Some(bg) = val.rsplit(';').next()
-            && let Ok(bg_num) = bg.parse::<u8>()
-            && bg_num >= 8
-        {
-            return Self::light();
+        // OSC 10/11 query covers modern terminals (Alacritty, Kitty, WezTerm,
+        // Ghostty, foot, GNOME/VTE, Terminal.app) where COLORFGBG is unset.
+        // Falls back to Dark on detection failure (no TTY, query timeout,
+        // unsupported terminal) — matches the prior behavior.
+        use terminal_colorsaurus::{QueryOptions, ThemeMode as Detected, theme_mode};
+        match theme_mode(QueryOptions::default()) {
+            Ok(Detected::Light) => Self::light(),
+            Ok(Detected::Dark) | Err(_) => Self::dark(),
         }
-        Self::dark()
     }
 }
 
