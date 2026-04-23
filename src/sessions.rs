@@ -1191,6 +1191,7 @@ mod tests {
     fn sort_cache_ttl_reverse_still_pushes_expired_to_bottom() {
         let now = Utc::now();
         let mut entries = vec![
+            make_entry("expired_old", now - chrono::Duration::hours(3)),
             make_entry("expired_recent", now - chrono::Duration::seconds(400)),
             make_entry("fresh", now - chrono::Duration::seconds(10)),
             make_entry("expiring_soon", now - chrono::Duration::seconds(290)),
@@ -1199,7 +1200,9 @@ mod tests {
         // Warm entries reversed (fresh first), expired still at bottom.
         assert_eq!(entries[0].session_id, "fresh");
         assert_eq!(entries[1].session_id, "expiring_soon");
+        // Expired bucket ordering is independent of direction flag.
         assert_eq!(entries[2].session_id, "expired_recent");
+        assert_eq!(entries[3].session_id, "expired_old");
     }
 
     #[test]

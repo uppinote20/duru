@@ -166,8 +166,14 @@ impl App {
                     self.session_scroll = 0;
                 }
             }
-            KeyCode::Char('s') => self.cycle_sort(),
-            KeyCode::Char('S') => self.sort_reverse = !self.sort_reverse,
+            KeyCode::Char('s') => {
+                self.cycle_sort();
+                self.wants_refresh = true;
+            }
+            KeyCode::Char('S') => {
+                self.sort_reverse = !self.sort_reverse;
+                self.wants_refresh = true;
+            }
             KeyCode::Char('r') => self.wants_refresh = true,
             _ => {}
         }
@@ -552,6 +558,26 @@ mod tests {
         assert!(app.sort_reverse);
         app.handle_key(KeyEvent::new(KeyCode::Char('S'), KeyModifiers::SHIFT));
         assert!(!app.sort_reverse);
+    }
+
+    #[test]
+    fn sessions_mode_shift_s_requests_immediate_refresh() {
+        // The header arrow flips on the next render, so the table rows must
+        // be re-sorted the same tick — not up to `FAST_POLL_MS` later.
+        let mut app = app_in_sessions_mode();
+        assert!(!app.wants_refresh);
+        app.handle_key(KeyEvent::new(KeyCode::Char('S'), KeyModifiers::SHIFT));
+        assert!(app.wants_refresh);
+    }
+
+    #[test]
+    fn sessions_mode_s_requests_immediate_refresh() {
+        // Same rationale as `S`: the active-column indicator moves on render,
+        // rows must re-sort the same tick.
+        let mut app = app_in_sessions_mode();
+        assert!(!app.wants_refresh);
+        app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
+        assert!(app.wants_refresh);
     }
 
     #[test]

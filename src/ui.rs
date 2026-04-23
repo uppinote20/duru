@@ -104,8 +104,7 @@ fn render_sessions_table(frame: &mut Frame, app: &App, theme: &Theme, area: Rect
         return;
     }
 
-    let header_cells = sessions_header_cells(app.sessions_sort, app.sort_reverse);
-    let header = Row::new(header_cells.to_vec())
+    let header = Row::new(sessions_header_cells(app.sessions_sort, app.sort_reverse))
         .style(Style::default().fg(theme.text).add_modifier(Modifier::BOLD))
         .bottom_margin(1);
 
