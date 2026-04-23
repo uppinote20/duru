@@ -18,6 +18,7 @@ chrono = { version = "0.4", default-features = false, features = ["std", "clock"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+terminal-colorsaurus = "1"
 
 [dev-dependencies]
 tempfile = "3"
