@@ -134,7 +134,7 @@ fn render_sessions_table(frame: &mut Frame, app: &App, theme: &Theme, area: Rect
                 Cell::from(project),
                 Cell::from(mode_abbrev(entry.permission_mode.as_deref()).to_string()),
                 Cell::from(relative_age(entry.last_activity, now)),
-                render_ttl_cell(remaining, theme),
+                render_ttl_cell(remaining, theme, state),
                 Cell::from(sessions::format_bytes(entry.file_size)),
             ])
             .style(Style::default().fg(row_fg))
@@ -190,7 +190,8 @@ fn render_sessions_detail(frame: &mut Frame, app: &App, theme: &Theme, area: Rec
 
     let now = chrono::Utc::now();
     let remaining = sessions::cache_ttl_remaining_secs(entry, now);
-    let (ttl_text, ttl_color) = ttl_cell_parts(remaining, theme);
+    let state = sessions::state_at(entry, now);
+    let (ttl_text, ttl_color) = ttl_cell_parts(remaining, theme, state);
 
     let started_line = match entry.started_at {
         Some(ts) => {
@@ -425,11 +426,19 @@ const SESSION_DETAIL_HEIGHT: u16 = 9;
 const PROJECT_NAME_MAX_WIDTH: usize = 22;
 
 /// Cache-TTL color thresholds. Remaining-ratio above WARN → green, between
-/// CRIT and WARN → yellow, below CRIT → red + BOLD.
+/// CRIT and WARN → yellow, below CRIT → red. Stale overrides all three to muted.
 const TTL_WARN_RATIO: f64 = 0.5;
 const TTL_CRIT_RATIO: f64 = 0.2;
 
-pub(crate) fn ttl_cell_parts(remaining_secs: i64, theme: &Theme) -> (String, Color) {
+/// Remaining-seconds threshold below which the TTL cell renders BOLD as a
+/// last-minute urgency cue. Applies to Active sessions only.
+const TTL_BOLD_SECS: i64 = 60;
+
+/// For a Stale session the color is forced to muted regardless of remaining —
+/// the cache may still be warm on Anthropic's side (resume within TTL = cache
+/// hit), but the urgency cues (green/gold/red) shouldn't compete with the `○`
+/// glyph. Text stays state-independent so the mm:ss bar remains readable.
+fn ttl_cell_parts(remaining_secs: i64, theme: &Theme, state: State) -> (String, Color) {
     if remaining_secs <= 0 {
         return ("— expired".to_string(), theme.muted);
     }
@@ -438,7 +447,9 @@ pub(crate) fn ttl_cell_parts(remaining_secs: i64, theme: &Theme) -> (String, Col
     let ratio = remaining_secs as f64 / sessions::TTL_SECS as f64;
     let filled = (ratio * TTL_BAR_WIDTH as f64).round() as usize;
     let filled = filled.min(TTL_BAR_WIDTH);
-    let color = if ratio > TTL_WARN_RATIO {
+    let color = if state == State::Stale {
+        theme.muted
+    } else if ratio > TTL_WARN_RATIO {
         theme.pine
     } else if ratio > TTL_CRIT_RATIO {
         theme.gold
@@ -450,9 +461,10 @@ pub(crate) fn ttl_cell_parts(remaining_secs: i64, theme: &Theme) -> (String, Col
     (text, color)
 }
 
-pub(crate) fn render_ttl_cell(remaining_secs: i64, theme: &Theme) -> Cell<'static> {
-    let (text, color) = ttl_cell_parts(remaining_secs, theme);
-    let style = if remaining_secs > 0 && remaining_secs < 60 {
+fn render_ttl_cell(remaining_secs: i64, theme: &Theme, state: State) -> Cell<'static> {
+    let (text, color) = ttl_cell_parts(remaining_secs, theme, state);
+    let urgent = state == State::Active && (1..TTL_BOLD_SECS).contains(&remaining_secs);
+    let style = if urgent {
         Style::default().fg(color).add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(color)
@@ -489,44 +501,60 @@ mod tests {
     #[test]
     fn ttl_cell_expired_has_em_dash() {
         let theme = Theme::dark();
-        let (text, _) = ttl_cell_parts(0, &theme);
+        let (text, _) = ttl_cell_parts(0, &theme, State::Active);
         assert!(text.contains("— expired"));
     }
 
     #[test]
     fn ttl_cell_has_mm_ss_format() {
         let theme = Theme::dark();
-        let (text, _) = ttl_cell_parts(277, &theme);
+        let (text, _) = ttl_cell_parts(277, &theme, State::Active);
         assert!(text.starts_with("04:37"));
     }
 
     #[test]
     fn ttl_cell_high_uses_pine() {
         let theme = Theme::dark();
-        let (_, color) = ttl_cell_parts(270, &theme);
+        let (_, color) = ttl_cell_parts(270, &theme, State::Active);
         assert_eq!(color, theme.pine);
     }
 
     #[test]
     fn ttl_cell_medium_uses_gold() {
         let theme = Theme::dark();
-        let (_, color) = ttl_cell_parts(120, &theme);
+        let (_, color) = ttl_cell_parts(120, &theme, State::Active);
         assert_eq!(color, theme.gold);
     }
 
     #[test]
     fn ttl_cell_low_uses_love() {
         let theme = Theme::dark();
-        let (_, color) = ttl_cell_parts(30, &theme);
+        let (_, color) = ttl_cell_parts(30, &theme, State::Active);
         assert_eq!(color, theme.love);
     }
 
     #[test]
     fn ttl_cell_bar_shrinks_as_time_elapses() {
         let theme = Theme::dark();
-        let (full_text, _) = ttl_cell_parts(300, &theme);
-        let (empty_text, _) = ttl_cell_parts(1, &theme);
+        let (full_text, _) = ttl_cell_parts(300, &theme, State::Active);
+        let (empty_text, _) = ttl_cell_parts(1, &theme, State::Active);
         let filled = |s: &str| s.matches('█').count();
         assert!(filled(&full_text) >= filled(&empty_text));
+    }
+
+    #[test]
+    fn ttl_cell_stale_overrides_color_to_muted() {
+        let theme = Theme::dark();
+        // remaining=270s would normally be pine (ratio > 0.5); Stale forces muted.
+        let (_, color) = ttl_cell_parts(270, &theme, State::Stale);
+        assert_eq!(color, theme.muted);
+    }
+
+    #[test]
+    fn ttl_cell_stale_preserves_text() {
+        let theme = Theme::dark();
+        let (active_text, _) = ttl_cell_parts(270, &theme, State::Active);
+        let (stale_text, _) = ttl_cell_parts(270, &theme, State::Stale);
+        assert_eq!(stale_text, active_text);
     }
 }
