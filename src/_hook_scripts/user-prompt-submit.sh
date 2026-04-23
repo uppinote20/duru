@@ -18,6 +18,7 @@ if [ -f "$REGISTRY" ]; then
 else
   CWD=$(echo "$INPUT" | jq -r '.cwd // empty')
   TRANSCRIPT=$(echo "$INPUT" | jq -r '.transcript_path // empty')
+  # PPID rationale: see session-start.sh / issue #16.
   jq -n --arg sid "$SESSION_ID" --arg hb "$NOW" --arg mode "$MODE" \
         --arg cwd "$CWD" --arg tr "$TRANSCRIPT" --argjson pid "${PPID:-0}" \
     '{schema_version:1, session_id:$sid, pid:$pid, cwd:$cwd,

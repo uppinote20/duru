@@ -104,17 +104,9 @@ fn render_sessions_table(frame: &mut Frame, app: &App, theme: &Theme, area: Rect
         return;
     }
 
-    let header = Row::new(vec![
-        "",
-        "ID",
-        "Project",
-        "Mode",
-        "Last",
-        "Cache TTL",
-        "Size",
-    ])
-    .style(Style::default().fg(theme.text).add_modifier(Modifier::BOLD))
-    .bottom_margin(1);
+    let header = Row::new(sessions_header_cells(app.sessions_sort, app.sort_reverse))
+        .style(Style::default().fg(theme.text).add_modifier(Modifier::BOLD))
+        .bottom_margin(1);
 
     let rows: Vec<Row> = app
         .sessions
@@ -392,6 +384,7 @@ fn render_help_bar(frame: &mut Frame, mode: AppMode, theme: &Theme, area: Rect) 
             ("↑↓", "navigate"),
             ("←→", "pane"),
             ("s", "sort"),
+            ("S", "reverse"),
             ("r", "refresh"),
             ("Tab", "memory"),
             ("q", "quit"),
@@ -466,6 +459,32 @@ fn ttl_cell_parts(remaining_secs: i64, theme: &Theme, state: State) -> (String, 
 /// already signals the session is cooled off, a BOLD urgency cue would fight it.
 fn ttl_urgent(remaining_secs: i64, state: State) -> bool {
     state == State::Active && (1..TTL_BOLD_SECS).contains(&remaining_secs)
+}
+
+/// Sessions table header labels, with an arrow appended to the active sort
+/// column. `↓` = Desc (newest / largest / longest-TTL first), `↑` = Asc.
+fn sessions_header_cells(sort: sessions::SessionsSort, reverse: bool) -> [String; 7] {
+    let arrow = match sort.effective_direction(reverse) {
+        sessions::SortDirection::Asc => "↑",
+        sessions::SortDirection::Desc => "↓",
+    };
+    let mut cells: [String; 7] = [
+        String::new(),
+        "ID".into(),
+        "Project".into(),
+        "Mode".into(),
+        "Last".into(),
+        "Cache TTL".into(),
+        "Size".into(),
+    ];
+    let idx = match sort {
+        sessions::SessionsSort::Project => 2,
+        sessions::SessionsSort::LastActivity => 4,
+        sessions::SessionsSort::CacheTtl => 5,
+        sessions::SessionsSort::Size => 6,
+    };
+    cells[idx] = format!("{} {}", cells[idx], arrow);
+    cells
 }
 
 fn render_ttl_cell(remaining_secs: i64, theme: &Theme, state: State) -> Cell<'static> {
@@ -587,5 +606,41 @@ mod tests {
     fn ttl_urgent_non_positive_remaining_not_urgent() {
         assert!(!ttl_urgent(0, State::Active));
         assert!(!ttl_urgent(-10, State::Active));
+    }
+
+    #[test]
+    fn header_cells_mark_active_sort_field_with_default_arrow() {
+        let cells = sessions_header_cells(sessions::SessionsSort::LastActivity, false);
+        assert_eq!(cells[4], "Last ↓");
+        assert_eq!(cells[5], "Cache TTL", "inactive field has no arrow");
+        assert_eq!(cells[6], "Size");
+        assert_eq!(cells[2], "Project");
+    }
+
+    #[test]
+    fn header_cells_arrow_flips_when_reversed() {
+        let cells = sessions_header_cells(sessions::SessionsSort::LastActivity, true);
+        assert_eq!(cells[4], "Last ↑");
+    }
+
+    #[test]
+    fn header_cells_cache_ttl_defaults_ascending() {
+        // CacheTtl's natural direction is Asc (expiring-first).
+        let cells = sessions_header_cells(sessions::SessionsSort::CacheTtl, false);
+        assert_eq!(cells[5], "Cache TTL ↑");
+    }
+
+    #[test]
+    fn header_cells_project_sort_marks_column_two() {
+        let cells = sessions_header_cells(sessions::SessionsSort::Project, false);
+        assert_eq!(cells[2], "Project ↑");
+        assert_eq!(cells[4], "Last");
+    }
+
+    #[test]
+    fn header_cells_size_sort_marks_column_six() {
+        let cells = sessions_header_cells(sessions::SessionsSort::Size, false);
+        assert_eq!(cells[6], "Size ↓");
+        assert_eq!(cells[4], "Last");
     }
 }

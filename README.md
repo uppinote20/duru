@@ -78,10 +78,13 @@ Press `Tab` to switch between two modes:
 | `jk` / `↑↓` | Navigate rows (Table) / scroll (Detail) |
 | `hl` / `←→` | Toggle Table / Detail focus |
 | `s` | Cycle sort (activity → TTL → project → size) |
+| `S` | Reverse sort direction (toggle asc/desc) |
 | `r` | Force refresh |
 | `g` `G` | Jump to top / bottom |
 | `Tab` | Switch to Memory mode |
 | `q` | Quit |
+
+The active sort column shows a direction arrow in the table header: `↓` for descending (the default for activity and size), `↑` for ascending (the default for cache TTL and project). Press `S` to flip the current column's direction.
 
 ## Layout
 

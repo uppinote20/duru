@@ -57,6 +57,7 @@ pub struct App {
     pub session_scroll: u16,
     pub sessions_focus: SessionsPane,
     pub sessions_sort: SessionsSort,
+    pub sort_reverse: bool,
     pub last_refresh: Instant,
     pub wants_refresh: bool,
     pub skip_real_refresh: bool,
@@ -81,6 +82,7 @@ impl App {
             session_scroll: 0,
             sessions_focus: SessionsPane::Table,
             sessions_sort: SessionsSort::default(),
+            sort_reverse: false,
             last_refresh: Instant::now(),
             wants_refresh: false,
             skip_real_refresh: false,
@@ -164,7 +166,14 @@ impl App {
                     self.session_scroll = 0;
                 }
             }
-            KeyCode::Char('s') => self.cycle_sort(),
+            KeyCode::Char('s') => {
+                self.cycle_sort();
+                self.wants_refresh = true;
+            }
+            KeyCode::Char('S') => {
+                self.sort_reverse = !self.sort_reverse;
+                self.wants_refresh = true;
+            }
             KeyCode::Char('r') => self.wants_refresh = true,
             _ => {}
         }
@@ -191,7 +200,12 @@ impl App {
         use crate::sessions::sort_entries;
         self.session_cache.refresh(claude_dir);
         let mut entries = self.session_cache.entries();
-        sort_entries(&mut entries, self.sessions_sort, chrono::Utc::now());
+        sort_entries(
+            &mut entries,
+            self.sessions_sort,
+            self.sort_reverse,
+            chrono::Utc::now(),
+        );
         self.sessions = entries;
         self.clamp_session_index();
         self.last_refresh = Instant::now();
@@ -534,6 +548,48 @@ mod tests {
         assert_eq!(app.sessions_sort, SessionsSort::Size);
         app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
         assert_eq!(app.sessions_sort, SessionsSort::LastActivity);
+    }
+
+    #[test]
+    fn sessions_mode_shift_s_toggles_sort_reverse() {
+        let mut app = app_in_sessions_mode();
+        assert!(!app.sort_reverse);
+        app.handle_key(KeyEvent::new(KeyCode::Char('S'), KeyModifiers::SHIFT));
+        assert!(app.sort_reverse);
+        app.handle_key(KeyEvent::new(KeyCode::Char('S'), KeyModifiers::SHIFT));
+        assert!(!app.sort_reverse);
+    }
+
+    #[test]
+    fn sessions_mode_shift_s_requests_immediate_refresh() {
+        // The header arrow flips on the next render, so the table rows must
+        // be re-sorted the same tick — not up to `FAST_POLL_MS` later.
+        let mut app = app_in_sessions_mode();
+        assert!(!app.wants_refresh);
+        app.handle_key(KeyEvent::new(KeyCode::Char('S'), KeyModifiers::SHIFT));
+        assert!(app.wants_refresh);
+    }
+
+    #[test]
+    fn sessions_mode_s_requests_immediate_refresh() {
+        // Same rationale as `S`: the active-column indicator moves on render,
+        // rows must re-sort the same tick.
+        let mut app = app_in_sessions_mode();
+        assert!(!app.wants_refresh);
+        app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
+        assert!(app.wants_refresh);
+    }
+
+    #[test]
+    fn sessions_mode_s_preserves_sort_reverse() {
+        let mut app = app_in_sessions_mode();
+        app.sort_reverse = true;
+        app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
+        assert_eq!(app.sessions_sort, SessionsSort::CacheTtl);
+        assert!(
+            app.sort_reverse,
+            "cycling sort must not clear the reverse flag"
+        );
     }
 
     #[test]

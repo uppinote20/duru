@@ -43,6 +43,37 @@ pub enum SessionsSort {
     Size,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortDirection {
+    Asc,
+    Desc,
+}
+
+impl SessionsSort {
+    /// Natural direction for each field. `LastActivity` and `Size` default to
+    /// Desc (newest/largest first); `CacheTtl` defaults to Asc so sessions
+    /// closest to cache expiry surface at the top ("needs attention" order);
+    /// `Project` defaults to Asc for alphabetical scanning.
+    pub fn default_direction(self) -> SortDirection {
+        match self {
+            SessionsSort::LastActivity => SortDirection::Desc,
+            SessionsSort::CacheTtl => SortDirection::Asc,
+            SessionsSort::Project => SortDirection::Asc,
+            SessionsSort::Size => SortDirection::Desc,
+        }
+    }
+
+    /// Effective direction given a reverse flag. `reverse=false` returns the
+    /// default; `reverse=true` flips it.
+    pub fn effective_direction(self, reverse: bool) -> SortDirection {
+        match (self.default_direction(), reverse) {
+            (d, false) => d,
+            (SortDirection::Asc, true) => SortDirection::Desc,
+            (SortDirection::Desc, true) => SortDirection::Asc,
+        }
+    }
+}
+
 pub fn short_id(uuid: &str) -> String {
     uuid.chars().take(SHORT_ID_LEN).collect()
 }
@@ -477,22 +508,53 @@ pub fn demo_sessions() -> Vec<SessionEntry> {
     ]
 }
 
-pub fn sort_entries(entries: &mut [SessionEntry], sort: SessionsSort, now: DateTime<Utc>) {
+/// Sort `entries` in place by the given field. `reverse` flips each field's
+/// natural direction (see `SessionsSort::default_direction`) — useful for
+/// "oldest first" or "smallest first" views that the defaults don't cover.
+pub fn sort_entries(
+    entries: &mut [SessionEntry],
+    sort: SessionsSort,
+    reverse: bool,
+    now: DateTime<Utc>,
+) {
+    let direction = sort.effective_direction(reverse);
+    let order = |ord: std::cmp::Ordering| match direction {
+        SortDirection::Asc => ord,
+        SortDirection::Desc => ord.reverse(),
+    };
     match sort {
         SessionsSort::LastActivity => {
-            entries.sort_by_key(|e| std::cmp::Reverse(e.last_activity));
+            entries.sort_by(|a, b| order(a.last_activity.cmp(&b.last_activity)));
         }
         SessionsSort::CacheTtl => {
-            // Ascending on purpose: sessions closest to expiry come first
-            // ("needs attention" order). Do not "fix" to Reverse — that
-            // would hide the sessions a user cares most about at the bottom.
-            entries.sort_by_key(|e| cache_ttl_remaining_secs(e, now));
+            // Expired entries (remaining == 0) collapse to the same value, so
+            // they'd clump at the top of Asc ("needs attention") despite being
+            // the opposite of what the user wants. Bucket them: warm entries
+            // first (sorted by direction), expired entries always at the
+            // bottom (tie-broken by last_activity desc — most-recently expired
+            // first, which is the more useful ordering).
+            entries.sort_by(|a, b| {
+                let ra = cache_ttl_remaining_secs(a, now);
+                let rb = cache_ttl_remaining_secs(b, now);
+                match (ra == 0, rb == 0) {
+                    (false, false) => order(ra.cmp(&rb)),
+                    (false, true) => std::cmp::Ordering::Less,
+                    (true, false) => std::cmp::Ordering::Greater,
+                    (true, true) => b.last_activity.cmp(&a.last_activity),
+                }
+            });
         }
         SessionsSort::Project => {
-            entries.sort_by_key(|e| e.project_name.to_lowercase());
+            entries.sort_by(|a, b| {
+                order(
+                    a.project_name
+                        .to_lowercase()
+                        .cmp(&b.project_name.to_lowercase()),
+                )
+            });
         }
         SessionsSort::Size => {
-            entries.sort_by_key(|e| std::cmp::Reverse(e.file_size));
+            entries.sort_by(|a, b| order(a.file_size.cmp(&b.file_size)));
         }
     }
 }
@@ -793,7 +855,7 @@ mod tests {
             make_entry("new", now - chrono::Duration::seconds(5)),
             make_entry("mid", now - chrono::Duration::minutes(2)),
         ];
-        sort_entries(&mut entries, SessionsSort::LastActivity, now);
+        sort_entries(&mut entries, SessionsSort::LastActivity, false, now);
         assert_eq!(entries[0].session_id, "new");
         assert_eq!(entries[1].session_id, "mid");
         assert_eq!(entries[2].session_id, "old");
@@ -807,7 +869,7 @@ mod tests {
             make_entry("expiring", now - chrono::Duration::seconds(270)),
             make_entry("middle", now - chrono::Duration::seconds(120)),
         ];
-        sort_entries(&mut entries, SessionsSort::CacheTtl, now);
+        sort_entries(&mut entries, SessionsSort::CacheTtl, false, now);
         assert_eq!(entries[0].session_id, "expiring");
         assert_eq!(entries[1].session_id, "middle");
         assert_eq!(entries[2].session_id, "fresh");
@@ -821,7 +883,7 @@ mod tests {
             make_entry("a", now),
             make_entry("b", now),
         ];
-        sort_entries(&mut entries, SessionsSort::Project, now);
+        sort_entries(&mut entries, SessionsSort::Project, false, now);
         assert_eq!(entries[0].session_id, "a");
         assert_eq!(entries[2].session_id, "c");
     }
@@ -1059,9 +1121,108 @@ mod tests {
         entries[0].file_size = 100;
         entries[1].file_size = 10_000;
         entries[2].file_size = 1_000;
-        sort_entries(&mut entries, SessionsSort::Size, now);
+        sort_entries(&mut entries, SessionsSort::Size, false, now);
         assert_eq!(entries[0].session_id, "big");
         assert_eq!(entries[1].session_id, "mid");
         assert_eq!(entries[2].session_id, "small");
+    }
+
+    #[test]
+    fn sessions_sort_default_direction_per_field() {
+        assert_eq!(
+            SessionsSort::LastActivity.default_direction(),
+            SortDirection::Desc
+        );
+        assert_eq!(
+            SessionsSort::CacheTtl.default_direction(),
+            SortDirection::Asc
+        );
+        assert_eq!(
+            SessionsSort::Project.default_direction(),
+            SortDirection::Asc
+        );
+        assert_eq!(SessionsSort::Size.default_direction(), SortDirection::Desc);
+    }
+
+    #[test]
+    fn sort_last_activity_reverse_puts_oldest_first() {
+        let now = Utc::now();
+        let mut entries = vec![
+            make_entry("new", now - chrono::Duration::seconds(5)),
+            make_entry("old", now - chrono::Duration::minutes(10)),
+            make_entry("mid", now - chrono::Duration::minutes(2)),
+        ];
+        sort_entries(&mut entries, SessionsSort::LastActivity, true, now);
+        assert_eq!(entries[0].session_id, "old");
+        assert_eq!(entries[2].session_id, "new");
+    }
+
+    #[test]
+    fn sort_cache_ttl_reverse_puts_freshest_first() {
+        let now = Utc::now();
+        let mut entries = vec![
+            make_entry("fresh", now - chrono::Duration::seconds(10)),
+            make_entry("expiring", now - chrono::Duration::seconds(270)),
+        ];
+        sort_entries(&mut entries, SessionsSort::CacheTtl, true, now);
+        assert_eq!(entries[0].session_id, "fresh");
+        assert_eq!(entries[1].session_id, "expiring");
+    }
+
+    #[test]
+    fn sort_cache_ttl_asc_pushes_expired_to_bottom() {
+        let now = Utc::now();
+        let mut entries = vec![
+            make_entry("expired_old", now - chrono::Duration::hours(3)),
+            make_entry("expiring_soon", now - chrono::Duration::seconds(290)),
+            make_entry("expired_recent", now - chrono::Duration::seconds(400)),
+            make_entry("fresh", now - chrono::Duration::seconds(10)),
+        ];
+        sort_entries(&mut entries, SessionsSort::CacheTtl, false, now);
+        // Warm entries first, Asc (expiring-soonest → freshest).
+        assert_eq!(entries[0].session_id, "expiring_soon");
+        assert_eq!(entries[1].session_id, "fresh");
+        // Expired entries at the bottom, most-recently expired first.
+        assert_eq!(entries[2].session_id, "expired_recent");
+        assert_eq!(entries[3].session_id, "expired_old");
+    }
+
+    #[test]
+    fn sort_cache_ttl_reverse_still_pushes_expired_to_bottom() {
+        let now = Utc::now();
+        let mut entries = vec![
+            make_entry("expired_old", now - chrono::Duration::hours(3)),
+            make_entry("expired_recent", now - chrono::Duration::seconds(400)),
+            make_entry("fresh", now - chrono::Duration::seconds(10)),
+            make_entry("expiring_soon", now - chrono::Duration::seconds(290)),
+        ];
+        sort_entries(&mut entries, SessionsSort::CacheTtl, true, now);
+        // Warm entries reversed (fresh first), expired still at bottom.
+        assert_eq!(entries[0].session_id, "fresh");
+        assert_eq!(entries[1].session_id, "expiring_soon");
+        // Expired bucket ordering is independent of direction flag.
+        assert_eq!(entries[2].session_id, "expired_recent");
+        assert_eq!(entries[3].session_id, "expired_old");
+    }
+
+    #[test]
+    fn sort_project_reverse_puts_z_first() {
+        let now = Utc::now();
+        let mut entries = vec![make_entry("a", now), make_entry("z", now)];
+        sort_entries(&mut entries, SessionsSort::Project, true, now);
+        // project_name = format!("proj-{id}"), so "proj-z" reversed comes first
+        assert_eq!(entries[0].session_id, "z");
+        assert_eq!(entries[1].session_id, "a");
+    }
+
+    #[test]
+    fn sort_size_reverse_puts_smallest_first() {
+        let now = Utc::now();
+        let mut entries = vec![make_entry("big", now), make_entry("small", now)];
+        entries[0].file_size = 10_000;
+        entries[1].file_size = 100;
+        sort_entries(&mut entries, SessionsSort::Size, true, now);
+        assert_eq!(entries[0].session_id, "small");
+        assert_eq!(entries[1].session_id, "big");
     }
 }
