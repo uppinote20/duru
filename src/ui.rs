@@ -461,10 +461,16 @@ fn ttl_cell_parts(remaining_secs: i64, theme: &Theme, state: State) -> (String, 
     (text, color)
 }
 
+/// True when the TTL cell should render BOLD: Active session with remaining
+/// inside `[1, TTL_BOLD_SECS)`. Stale sessions never bold — the `○` glyph
+/// already signals the session is cooled off, a BOLD urgency cue would fight it.
+fn ttl_urgent(remaining_secs: i64, state: State) -> bool {
+    state == State::Active && (1..TTL_BOLD_SECS).contains(&remaining_secs)
+}
+
 fn render_ttl_cell(remaining_secs: i64, theme: &Theme, state: State) -> Cell<'static> {
     let (text, color) = ttl_cell_parts(remaining_secs, theme, state);
-    let urgent = state == State::Active && (1..TTL_BOLD_SECS).contains(&remaining_secs);
-    let style = if urgent {
+    let style = if ttl_urgent(remaining_secs, state) {
         Style::default().fg(color).add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(color)
@@ -556,5 +562,30 @@ mod tests {
         let (active_text, _) = ttl_cell_parts(270, &theme, State::Active);
         let (stale_text, _) = ttl_cell_parts(270, &theme, State::Stale);
         assert_eq!(stale_text, active_text);
+    }
+
+    #[test]
+    fn ttl_urgent_stale_never_bold() {
+        assert!(!ttl_urgent(1, State::Stale));
+        assert!(!ttl_urgent(30, State::Stale));
+        assert!(!ttl_urgent(59, State::Stale));
+    }
+
+    #[test]
+    fn ttl_urgent_active_under_threshold_is_urgent() {
+        assert!(ttl_urgent(1, State::Active));
+        assert!(ttl_urgent(59, State::Active));
+    }
+
+    #[test]
+    fn ttl_urgent_active_at_or_above_threshold_not_urgent() {
+        assert!(!ttl_urgent(TTL_BOLD_SECS, State::Active));
+        assert!(!ttl_urgent(300, State::Active));
+    }
+
+    #[test]
+    fn ttl_urgent_non_positive_remaining_not_urgent() {
+        assert!(!ttl_urgent(0, State::Active));
+        assert!(!ttl_urgent(-10, State::Active));
     }
 }
