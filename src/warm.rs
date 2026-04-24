@@ -1,16 +1,22 @@
-//! `duru warm` CLI scaffold — MVP3.
+//! `duru warm` — cache warming daemon controls.
 //!
-//! PR1 wires only `set-key`, `unset-key`, and `check-key`. Every other
-//! subcommand parses correctly but its handler prints a stub pointing at the
-//! MVP3 sub-issue that will implement it. This lets later PRs land each slice
-//! without renaming or moving the clap surface.
+//! Secret management and the CLI surface land here; session-picking policy,
+//! the daemon loop, and supervisor installation arrive in follow-up work.
+//! See the MVP3 umbrella (#17) for the full design.
 
 use std::io::{self, IsTerminal, Write};
 use std::path::Path;
 
 use clap::Subcommand;
 
+use crate::hooks_install::registry_dir;
 use crate::secrets::{self, KeyringBackend, SecretBackend};
+
+// Issue numbers referenced by stub messages. Keeping them here means
+// a renumber or rescope touches one table, not eight `writeln!` calls.
+const ISSUE_PREFIX_RECON: u32 = 19;
+const ISSUE_DAEMON: u32 = 21;
+const ISSUE_OBSERVABILITY: u32 = 23;
 
 #[derive(Subcommand, Debug)]
 pub enum WarmAction {
@@ -24,20 +30,20 @@ pub enum WarmAction {
     CheckKey,
     /// Remove any stored API key from the keychain
     UnsetKey,
-    /// Test prefix reconstruction against a session (filled in by #19)
+    /// Dry-run: reconstruct a cache-hit ping for a session and print it
     DryRun {
         /// Session id from the duru Sessions view
         session_id: String,
     },
-    /// Install the launchd/systemd supervisor unit (filled in by #21)
+    /// Install the launchd/systemd supervisor unit
     Install {
         /// Print what would happen without modifying anything
         #[arg(long)]
         dry_run: bool,
     },
-    /// Remove the supervisor unit (filled in by #21)
+    /// Remove the supervisor unit
     Uninstall,
-    /// Run the warming loop in the foreground (filled in by #21)
+    /// Run the warming loop in the foreground
     Daemon,
     /// Show key + daemon + recent-ping state
     Status {
@@ -50,18 +56,14 @@ pub enum WarmAction {
     },
 }
 
-/// Entry point from `main.rs`. Returns an error if preflight fails.
 pub fn run(home: &Path, action: WarmAction) -> io::Result<()> {
     preflight(home)?;
     let backend = KeyringBackend::new();
     dispatch(&backend, action, &mut io::stdin().lock(), &mut io::stdout())
 }
 
-/// All warm subcommands require `duru hooks install` to have run first.
-/// Without the registry there's nothing to warm and nothing to report on.
 pub fn preflight(home: &Path) -> io::Result<()> {
-    let registry = home.join(".claude").join("duru").join("registry");
-    if registry.is_dir() {
+    if registry_dir(home).is_dir() {
         return Ok(());
     }
     Err(io::Error::new(
@@ -76,42 +78,63 @@ pub fn dispatch<B: SecretBackend>(
     stdin: &mut impl io::BufRead,
     stdout: &mut impl Write,
 ) -> io::Result<()> {
+    dispatch_with_env(backend, action, stdin, stdout, |v| std::env::var(v).ok())
+}
+
+fn dispatch_with_env<B, F>(
+    backend: &B,
+    action: WarmAction,
+    stdin: &mut impl io::BufRead,
+    stdout: &mut impl Write,
+    env_lookup: F,
+) -> io::Result<()>
+where
+    B: SecretBackend,
+    F: Fn(&str) -> Option<String>,
+{
     match action {
-        WarmAction::SetKey { from_env } => handle_set_key(backend, from_env, stdin, stdout),
+        WarmAction::SetKey { from_env } => {
+            handle_set_key(backend, from_env, env_lookup, stdin, stdout)
+        }
         WarmAction::CheckKey => handle_check_key(backend, stdout),
         WarmAction::UnsetKey => handle_unset_key(backend, stdout),
-        WarmAction::DryRun { session_id } => {
-            writeln!(
-                stdout,
-                "dry-run for {session_id}: prefix reconstruction lands in MVP3 issue #19"
-            )?;
-            Ok(())
-        }
-        WarmAction::Install { dry_run } => {
-            let verb = if dry_run { "would install" } else { "install" };
-            writeln!(stdout, "{verb} supervisor unit lands in MVP3 issue #21")?;
-            Ok(())
-        }
-        WarmAction::Uninstall => {
-            writeln!(stdout, "uninstall lands in MVP3 issue #21")?;
-            Ok(())
-        }
-        WarmAction::Daemon => {
-            writeln!(stdout, "daemon loop lands in MVP3 issue #21")?;
-            Ok(())
-        }
+        WarmAction::DryRun { session_id } => stub_note(
+            stdout,
+            &format!("dry-run {session_id}: prefix reconstruction"),
+            ISSUE_PREFIX_RECON,
+        ),
+        WarmAction::Install { dry_run } => stub_note(
+            stdout,
+            if dry_run {
+                "would install supervisor unit"
+            } else {
+                "install supervisor unit"
+            },
+            ISSUE_DAEMON,
+        ),
+        WarmAction::Uninstall => stub_note(stdout, "uninstall supervisor unit", ISSUE_DAEMON),
+        WarmAction::Daemon => stub_note(stdout, "daemon loop", ISSUE_DAEMON),
         WarmAction::Status { daemon, recent } => handle_status(backend, daemon, recent, stdout),
     }
 }
 
-fn handle_set_key<B: SecretBackend>(
+fn stub_note(stdout: &mut impl Write, what: &str, issue: u32) -> io::Result<()> {
+    writeln!(stdout, "{what} (MVP3 #{issue})")
+}
+
+fn handle_set_key<B, F>(
     backend: &B,
     from_env: Option<String>,
+    env_lookup: F,
     stdin: &mut impl io::BufRead,
     stdout: &mut impl Write,
-) -> io::Result<()> {
+) -> io::Result<()>
+where
+    B: SecretBackend,
+    F: Fn(&str) -> Option<String>,
+{
     let raw = match from_env {
-        Some(var) => std::env::var(&var).map_err(|_| {
+        Some(var) => env_lookup(&var).ok_or_else(|| {
             io::Error::new(io::ErrorKind::NotFound, format!("env var {var} is not set"))
         })?,
         None => read_key_from_stdin(stdin, stdout)?,
@@ -161,11 +184,12 @@ fn handle_status<B: SecretBackend>(
     if !daemon_only {
         handle_check_key(backend, stdout)?;
     }
-    writeln!(stdout, "daemon: not yet implemented (MVP3 issue #21)")?;
+    stub_note(stdout, "daemon: not yet implemented", ISSUE_DAEMON)?;
     if let Some(n) = recent {
-        writeln!(
+        stub_note(
             stdout,
-            "recent {n} pings: not yet implemented (MVP3 issue #23)"
+            &format!("recent {n} pings: not yet implemented"),
+            ISSUE_OBSERVABILITY,
         )?;
     }
     Ok(())
@@ -195,7 +219,7 @@ mod tests {
     #[test]
     fn preflight_ok_with_registry() {
         let tmp = TempDir::new().unwrap();
-        std::fs::create_dir_all(tmp.path().join(".claude/duru/registry")).unwrap();
+        std::fs::create_dir_all(registry_dir(tmp.path())).unwrap();
         preflight(tmp.path()).expect("preflight");
     }
 
@@ -228,21 +252,21 @@ mod tests {
     }
 
     #[test]
-    fn set_key_from_env_reads_var() {
-        let var = "DURU_TEST_API_KEY_VAR";
-        // Safe: test-only var, and we clean up immediately.
-        // SAFETY: single-threaded test, no other readers of this env var.
-        unsafe { std::env::set_var(var, "sk-ant-from-env") };
+    fn set_key_from_env_reads_via_injected_lookup() {
         let backend = MemoryBackend::new();
-        let out = dispatch_to_string(
+        let mut out = Vec::new();
+        let mut input = "".as_bytes();
+        dispatch_with_env(
             &backend,
             WarmAction::SetKey {
-                from_env: Some(var.to_string()),
+                from_env: Some("ANTHROPIC_API_KEY".into()),
             },
-            "",
-        );
-        // SAFETY: see above.
-        unsafe { std::env::remove_var(var) };
+            &mut input,
+            &mut out,
+            |v| (v == "ANTHROPIC_API_KEY").then(|| "sk-ant-from-env".to_string()),
+        )
+        .expect("dispatch");
+        let out = String::from_utf8(out).unwrap();
         assert!(out.contains("stored"));
         assert_eq!(backend.get().unwrap().as_deref(), Some("sk-ant-from-env"));
     }
@@ -252,13 +276,14 @@ mod tests {
         let backend = MemoryBackend::new();
         let mut out = Vec::new();
         let mut input = "".as_bytes();
-        let err = dispatch(
+        let err = dispatch_with_env(
             &backend,
             WarmAction::SetKey {
-                from_env: Some("DURU_DEFINITELY_UNSET_VAR_9".to_string()),
+                from_env: Some("ANTHROPIC_API_KEY".into()),
             },
             &mut input,
             &mut out,
+            |_| None,
         )
         .unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::NotFound);

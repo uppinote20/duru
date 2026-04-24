@@ -17,6 +17,7 @@ pub trait SecretBackend {
     fn remove(&self) -> io::Result<()>;
 }
 
+#[derive(Default)]
 pub struct KeyringBackend;
 
 impl KeyringBackend {
@@ -26,12 +27,6 @@ impl KeyringBackend {
 
     fn entry(&self) -> io::Result<keyring::Entry> {
         keyring::Entry::new(SERVICE, ACCOUNT).map_err(map_keyring_err)
-    }
-}
-
-impl Default for KeyringBackend {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -61,6 +56,7 @@ fn map_keyring_err(e: keyring::Error) -> io::Error {
 }
 
 #[cfg(test)]
+#[derive(Default)]
 pub struct MemoryBackend {
     cell: Mutex<Option<String>>,
 }
@@ -68,16 +64,7 @@ pub struct MemoryBackend {
 #[cfg(test)]
 impl MemoryBackend {
     pub fn new() -> Self {
-        Self {
-            cell: Mutex::new(None),
-        }
-    }
-}
-
-#[cfg(test)]
-impl Default for MemoryBackend {
-    fn default() -> Self {
-        Self::new()
+        Self::default()
     }
 }
 
