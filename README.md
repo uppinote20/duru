@@ -127,6 +127,22 @@ Hooks write per-session state into `~/.claude/duru/registry/<session_id>.json`. 
 
 duru is safe to run without installing hooks — it falls back to mtime-based inference.
 
+## Warming (experimental, MVP3)
+
+`duru warm` controls the cache-warming daemon that will refresh Anthropic's 5-minute prompt cache for live Claude Code sessions before it expires. MVP3 lands in slices; this release ships only secret management and the CLI scaffold.
+
+The Anthropic API key is stored in the OS keychain — Keychain on macOS, Credential Manager on Windows, Secret Service (GNOME Keyring / KWallet) on Linux. The key is never written to disk by duru and never accepted as a positional argument (which would leak into shell history).
+
+```bash
+duru warm set-key                         # paste key via stdin (no echo)
+duru warm set-key --from-env VAR          # pull from an env var
+duru warm unset-key                       # remove the stored key
+duru warm check-key                       # "configured (sk-ant-ap…)" or "not configured"
+duru warm status                          # aggregate view (key + daemon + recent pings)
+```
+
+`duru warm` requires `duru hooks install` first — without the registry there are no sessions to warm. The remaining subcommands (`dry-run`, `install`, `uninstall`, `daemon`) parse today but will be filled in by subsequent MVP3 PRs.
+
 ## Theme
 
 Rosé Pine with automatic dark/light detection.
