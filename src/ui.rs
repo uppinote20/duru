@@ -410,23 +410,26 @@ fn render_help_bar(frame: &mut Frame, mode: AppMode, theme: &Theme, area: Rect) 
     );
 }
 
-const TTL_BAR_WIDTH: usize = 8;
-
 /// Height of the Sessions-mode detail panel (includes 2 border rows).
 const SESSION_DETAIL_HEIGHT: u16 = 9;
 
 /// Max width the Project column renders before middle-truncating.
 const PROJECT_NAME_MAX_WIDTH: usize = 22;
 
-/// Cache-TTL color thresholds. Remaining-ratio above WARN → green, between
-/// CRIT and WARN → yellow, below CRIT → red. Stale overrides all three to muted.
+// --- Cache-TTL cell rendering ---
+
+/// Bar width in cells (e.g. `████▌·····`).
+const TTL_BAR_WIDTH: usize = 8;
+
+/// Color thresholds. Remaining-ratio above WARN → green, between CRIT and
+/// WARN → yellow, below CRIT → red. Stale overrides all three to muted.
 const TTL_WARN_RATIO: f64 = 0.5;
 const TTL_CRIT_RATIO: f64 = 0.2;
 
-/// Fraction of the TTL window inside which the cell renders BOLD as a
-/// last-stretch urgency cue. 1/5 → 60s for a 5-minute cache, 12 min for a
-/// 1-hour cache. Proportional so urgency always feels comparable.
-const TTL_BOLD_FRACTION: f64 = 0.2;
+/// Inside this fraction of the TTL window the cell also renders BOLD as a
+/// last-stretch urgency cue (5 m → last 60 s, 1 h → last 12 min). Tied to
+/// `TTL_CRIT_RATIO` on purpose — bold and red enter together.
+const TTL_BOLD_RATIO: f64 = TTL_CRIT_RATIO;
 
 /// For a Stale session the color is forced to muted regardless of remaining —
 /// the cache may still be warm on Anthropic's side (resume within TTL = cache
@@ -462,10 +465,10 @@ fn ttl_cell_parts(
 }
 
 /// True when the TTL cell should render BOLD: Active session with remaining
-/// inside `[1, ttl_secs * TTL_BOLD_FRACTION)`. Stale sessions never bold —
+/// inside `[1, ttl_secs * TTL_BOLD_RATIO)`. Stale sessions never bold —
 /// the `○` glyph already signals cooled off; a BOLD urgency cue would fight it.
 fn ttl_urgent(remaining_secs: i64, state: State, ttl_secs: i64) -> bool {
-    let bold_threshold = (ttl_secs as f64 * TTL_BOLD_FRACTION) as i64;
+    let bold_threshold = (ttl_secs as f64 * TTL_BOLD_RATIO) as i64;
     state == State::Active && (1..bold_threshold).contains(&remaining_secs)
 }
 

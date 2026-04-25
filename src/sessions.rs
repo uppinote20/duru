@@ -123,14 +123,9 @@ pub const TTL_1H_SECS: i64 = 3600;
 
 /// Fallback for sessions where TTL cannot be inferred from the transcript
 /// (new session, lazy-parsed stale file, hooks-only metadata). 5 minutes
-/// matches the API default — assuming the smaller window biases towards
-/// "looks expired" rather than "looks alive when it isn't".
+/// matches the API default — biases towards "looks expired" rather than
+/// "looks alive when it isn't".
 pub const TTL_DEFAULT_SECS: i64 = TTL_5M_SECS;
-
-/// Backwards-compatible alias kept for any external callers.
-#[deprecated(note = "use SessionEntry::cache_ttl_secs (per-session) or TTL_DEFAULT_SECS")]
-#[allow(dead_code)]
-pub const TTL_SECS: i64 = TTL_DEFAULT_SECS;
 
 /// First N lines of a transcript scanned to extract session_id, started_at,
 /// and cwd. Enough to skip past `file-history-snapshot` records that sometimes
@@ -304,9 +299,7 @@ fn ttl_from_assistant_usage(record: &serde_json::Value) -> Option<i64> {
     let read_u64 = |k: &str| cc.get(k).and_then(|v| v.as_u64()).unwrap_or(0);
     let one_hour = read_u64("ephemeral_1h_input_tokens");
     let five_min = read_u64("ephemeral_5m_input_tokens");
-    // 1h takes precedence when both are non-zero — extremely unlikely from
-    // Anthropic's API but the longer window is the safer display choice
-    // (over-shows time remaining rather than under-shows it).
+    // 1h precedence: longer window is the safer display when both are non-zero.
     if one_hour > 0 {
         Some(TTL_1H_SECS)
     } else if five_min > 0 {
@@ -530,7 +523,7 @@ fn scan_sessions(claude_dir: &Path) -> Vec<SessionEntry> {
 
 pub fn demo_sessions() -> Vec<SessionEntry> {
     let now = Utc::now();
-    let make = |id: &str, project: &str, secs_ago: i64, size: u64| {
+    let make = |id: &str, project: &str, secs_ago: i64, size: u64, ttl: i64| {
         let last_activity = now - chrono::Duration::seconds(secs_ago);
         SessionEntry {
             session_id: id.to_string(),
@@ -544,7 +537,7 @@ pub fn demo_sessions() -> Vec<SessionEntry> {
             permission_mode: None,
             registry_source: None,
             is_alive: None,
-            cache_ttl_secs: TTL_DEFAULT_SECS,
+            cache_ttl_secs: ttl,
         }
     };
     vec![
@@ -553,38 +546,46 @@ pub fn demo_sessions() -> Vec<SessionEntry> {
             "my-webapp",
             12,
             234_000,
+            TTL_DEFAULT_SECS,
         ),
-        make("a3f1e2d4-1234-1234-1234-123456789abc", "duru", 120, 187_000),
+        make(
+            "a3f1e2d4-1234-1234-1234-123456789abc",
+            "duru",
+            120,
+            187_000,
+            TTL_DEFAULT_SECS,
+        ),
         make(
             "b9e73dca-aefb-4a83-88f8-4534127e6281",
             "namuldogam",
             240,
             92_000,
+            TTL_DEFAULT_SECS,
         ),
         make(
             "90515568-bd14-4207-a9f5-2bc9d59973e7",
             "chrome-secret",
             1080,
             412_000,
+            TTL_DEFAULT_SECS,
         ),
         make(
             "f3bc49c4-5db3-4e09-8f60-de8c87654f6b",
             "rust-playground",
             7200,
             1_200_000,
+            TTL_DEFAULT_SECS,
         ),
         // One 1h-cache entry so demo / screenshot mode exercises the longer
-        // window in the rendered table. 25 min idle on a 1h cache → still
-        // mid-window (would be Stale on a 5m cache).
-        SessionEntry {
-            cache_ttl_secs: TTL_1H_SECS,
-            ..make(
-                "c2d6a181-8e30-4c79-9b5b-7a2c4cd9f9b1",
-                "long-conversation",
-                1500,
-                540_000,
-            )
-        },
+        // window. 25 min idle on a 1h cache → still mid-window (would be
+        // Stale on a 5m cache).
+        make(
+            "c2d6a181-8e30-4c79-9b5b-7a2c4cd9f9b1",
+            "long-conversation",
+            1500,
+            540_000,
+            TTL_1H_SECS,
+        ),
     ]
 }
 
