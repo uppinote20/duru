@@ -1,4 +1,7 @@
 #!/bin/bash
+# @handbook 8.2-hook-script-invariants
+# @handbook 8.3-pid-from-ppid
+# @tested tests/hook_scripts.rs
 INPUT=$(cat)
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty')
 [ -z "$SESSION_ID" ] && exit 0

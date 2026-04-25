@@ -1,3 +1,7 @@
+//! @handbook 4.8-registry-schema-versioning
+//! @handbook 4.9-pid-liveness-check
+//! @tested src/registry.rs#tests
+
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};

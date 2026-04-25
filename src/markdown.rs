@@ -1,3 +1,9 @@
+//! @handbook 7.1-frontmatter-peeling
+//! @handbook 7.2-style-stack
+//! @handbook 7.3-width-aware-rules
+//! @handbook 7.4-blockquote-depth-tracking
+//! @tested src/markdown.rs#tests
+
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
