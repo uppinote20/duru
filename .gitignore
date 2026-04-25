@@ -3,3 +3,10 @@ target/
 .superpowers/
 demo.cast
 docs/superpowers/
+
+# IDE
+.vscode/
+
+# Private docs (symlinked)
+.private/
+docs/ENGINEERING_HANDBOOK.md
