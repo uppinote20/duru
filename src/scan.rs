@@ -1,3 +1,7 @@
+//! @handbook 4.1-filesystem-scanning
+//! @handbook 4.2-project-name-decoding
+//! @tested src/scan.rs#tests
+
 use std::fs;
 use std::path::{Path, PathBuf};
 

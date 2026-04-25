@@ -1,6 +1,12 @@
 //! Integration tests for the embedded hook shell scripts. Each test spawns
 //! `bash` with one of the scripts and a synthetic JSON payload on stdin, then
 //! asserts the resulting registry file shape.
+//!
+//! @handbook 10.3-jq-presence-guard
+//! @handbook 10.5-unix-gated-tests
+//! @covers src/_hook_scripts/session-start.sh
+//! @covers src/_hook_scripts/user-prompt-submit.sh
+//! @covers src/_hook_scripts/session-end.sh
 
 #![cfg(unix)]
 

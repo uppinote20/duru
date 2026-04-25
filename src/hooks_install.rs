@@ -1,3 +1,10 @@
+//! @handbook 8.4-idempotent-jq-install
+//! @handbook 8.5-backup-retention
+//! @handbook 8.6-star-prompt-protocol
+//! @handbook 8.7-status-reporting
+//! @handbook 9.5-custom-home-testability
+//! @tested src/hooks_install.rs#tests
+
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};

@@ -1,3 +1,7 @@
+//! @handbook 2.3-adaptive-refresh
+//! @handbook 3.1-discriminated-enums
+//! @tested src/app.rs#tests
+
 use std::fs;
 use std::path::Path;
 use std::time::{Duration, Instant};

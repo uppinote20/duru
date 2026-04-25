@@ -1,3 +1,7 @@
+//! @handbook 6.1-theme-auto-detection
+//! @handbook 6.2-color-usage-convention
+//! @tested src/theme.rs#tests
+
 use ratatui::style::Color;
 
 #[cfg(unix)]

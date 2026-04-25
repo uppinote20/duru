@@ -4,6 +4,8 @@
 //!  - Always `exit 0` — never block Claude Code.
 //!  - Silent on stderr — avoid terminal corruption.
 //!  - Atomic write via mktemp + mv — no partial files visible.
+//!
+//! @handbook 8.1-embedded-shell-scripts
 
 pub const SESSION_START_SH: &str = include_str!("_hook_scripts/session-start.sh");
 

@@ -1,3 +1,9 @@
+//! @handbook 4.3-jsonl-transcript-parsing
+//! @handbook 4.5-cache-ttl-inference
+//! @handbook 4.6-mtime-keyed-cache
+//! @handbook 4.7-pid-dedup-clear-detection
+//! @tested src/sessions.rs#tests
+
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};

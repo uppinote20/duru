@@ -1,3 +1,8 @@
+//! @handbook 5.1-ratatui-composition
+//! @handbook 5.3-cache-ttl-cell
+//! @handbook 5.4-sort-indicators
+//! @tested src/ui.rs#tests
+
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Layout, Rect},

@@ -2,6 +2,10 @@
 // instead of match guards, for readability when the condition references captured state.
 #![allow(clippy::collapsible_match, clippy::collapsible_if)]
 
+//! @handbook 2.2-main-loop
+//! @handbook 2.4-editor-suspend
+//! @tested src/main.rs#tests
+
 mod app;
 mod hook_scripts;
 mod hooks_install;
