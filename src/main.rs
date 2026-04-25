@@ -8,11 +8,9 @@ mod hooks_install;
 mod markdown;
 mod registry;
 mod scan;
-mod secrets;
 mod sessions;
 mod theme;
 mod ui;
-mod warm;
 
 use std::io;
 use std::path::PathBuf;
@@ -29,7 +27,7 @@ use app::App;
 use scan::{demo_projects, scan_claude_dir};
 use theme::Theme;
 
-#[derive(Parser, Debug)]
+#[derive(Parser)]
 #[command(
     name = "duru",
     version,
@@ -52,21 +50,16 @@ struct Cli {
     command: Option<TopCommand>,
 }
 
-#[derive(Subcommand, Debug)]
+#[derive(Subcommand)]
 enum TopCommand {
     /// Install, uninstall, or check duru Claude Code hooks
     Hooks {
         #[command(subcommand)]
         action: HooksAction,
     },
-    /// Cache warming daemon controls (MVP3)
-    Warm {
-        #[command(subcommand)]
-        action: warm::WarmAction,
-    },
 }
 
-#[derive(Subcommand, Debug)]
+#[derive(Subcommand)]
 enum HooksAction {
     /// Install duru hooks into ~/.claude/settings.json
     Install {
@@ -150,10 +143,8 @@ fn main() -> io::Result<()> {
         None => home.clone(),
     };
 
-    match cli.command {
-        Some(TopCommand::Hooks { action }) => return run_hooks_command(&hooks_home, action),
-        Some(TopCommand::Warm { action }) => return warm::run(&hooks_home, action),
-        None => {}
+    if let Some(TopCommand::Hooks { action }) = cli.command {
+        return run_hooks_command(&hooks_home, action);
     }
 
     let claude_dir = cli.path.clone().unwrap_or_else(|| home.join(".claude"));
@@ -297,8 +288,6 @@ fn run_app(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::Parser;
-    use warm::WarmAction;
 
     #[test]
     fn resolve_editor_prefers_visual() {
@@ -313,114 +302,5 @@ mod tests {
     #[test]
     fn resolve_editor_defaults_to_vi() {
         assert_eq!(resolve_editor_from(None, None), "vi");
-    }
-
-    fn warm_action(args: &[&str]) -> WarmAction {
-        let cli = Cli::try_parse_from(args).expect("parse");
-        match cli.command {
-            Some(TopCommand::Warm { action }) => action,
-            other => panic!("expected Warm subcommand, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn warm_set_key_no_args() {
-        let action = warm_action(&["duru", "warm", "set-key"]);
-        assert!(matches!(action, WarmAction::SetKey { from_env: None }));
-    }
-
-    #[test]
-    fn warm_set_key_from_env() {
-        let action = warm_action(&["duru", "warm", "set-key", "--from-env", "ANTHROPIC_API_KEY"]);
-        match action {
-            WarmAction::SetKey { from_env } => {
-                assert_eq!(from_env.as_deref(), Some("ANTHROPIC_API_KEY"));
-            }
-            _ => panic!("expected SetKey"),
-        }
-    }
-
-    #[test]
-    fn warm_set_key_rejects_positional_arg() {
-        // Positional arg would leak into shell history (umbrella #18: MUST NOT accept).
-        assert!(Cli::try_parse_from(["duru", "warm", "set-key", "sk-ant-leaked"]).is_err());
-    }
-
-    #[test]
-    fn warm_check_key() {
-        assert!(matches!(
-            warm_action(&["duru", "warm", "check-key"]),
-            WarmAction::CheckKey
-        ));
-    }
-
-    #[test]
-    fn warm_unset_key() {
-        assert!(matches!(
-            warm_action(&["duru", "warm", "unset-key"]),
-            WarmAction::UnsetKey
-        ));
-    }
-
-    #[test]
-    fn warm_dry_run_requires_session_id() {
-        let action = warm_action(&["duru", "warm", "dry-run", "676b2e79"]);
-        match action {
-            WarmAction::DryRun { session_id } => assert_eq!(session_id, "676b2e79"),
-            _ => panic!("expected DryRun"),
-        }
-        assert!(Cli::try_parse_from(["duru", "warm", "dry-run"]).is_err());
-    }
-
-    #[test]
-    fn warm_install_flags() {
-        let default = warm_action(&["duru", "warm", "install"]);
-        assert!(matches!(default, WarmAction::Install { dry_run: false }));
-        let dry = warm_action(&["duru", "warm", "install", "--dry-run"]);
-        assert!(matches!(dry, WarmAction::Install { dry_run: true }));
-    }
-
-    #[test]
-    fn warm_uninstall() {
-        assert!(matches!(
-            warm_action(&["duru", "warm", "uninstall"]),
-            WarmAction::Uninstall
-        ));
-    }
-
-    #[test]
-    fn warm_daemon() {
-        assert!(matches!(
-            warm_action(&["duru", "warm", "daemon"]),
-            WarmAction::Daemon
-        ));
-    }
-
-    #[test]
-    fn warm_status_variants() {
-        let plain = warm_action(&["duru", "warm", "status"]);
-        assert!(matches!(
-            plain,
-            WarmAction::Status {
-                daemon: false,
-                recent: None
-            }
-        ));
-        let daemon_only = warm_action(&["duru", "warm", "status", "--daemon"]);
-        assert!(matches!(
-            daemon_only,
-            WarmAction::Status {
-                daemon: true,
-                recent: None
-            }
-        ));
-        let recent = warm_action(&["duru", "warm", "status", "--recent", "5"]);
-        match recent {
-            WarmAction::Status { daemon, recent } => {
-                assert!(!daemon);
-                assert_eq!(recent, Some(5));
-            }
-            _ => panic!("expected Status"),
-        }
     }
 }
