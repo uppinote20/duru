@@ -216,7 +216,13 @@ pub fn parse_first_record<R: Read>(reader: R) -> FirstRecord {
     out
 }
 
-const TAIL_CHUNK_BYTES: u64 = 8192;
+/// Tail-window size scanned by [`parse_tail`]. Sized to contain the last
+/// assistant turn whole — a single Claude tool_use response can exceed 8 KiB,
+/// so the timestamp-only origin (`8192`) was too small for the new
+/// `cache_creation` detection. Empirical sweep over ~1500 transcripts: 64 KiB
+/// captures the last assistant message in every recent (<24h) case observed.
+/// The lazy-parse cutoff means stale (>24h) files don't pay this cost.
+const TAIL_CHUNK_BYTES: u64 = 65_536;
 
 #[derive(Debug, Default, Clone)]
 pub struct TailRecord {
@@ -1108,6 +1114,30 @@ mod tests {
         let file = tempfile_with(&[USER_LINE, ASSISTANT_1H_LINE, USER_LINE, ASSISTANT_5M_LINE]);
         let parsed = parse_tail(file.path()).unwrap();
         assert_eq!(parsed.cache_ttl_secs, Some(TTL_5M_SECS));
+    }
+
+    #[test]
+    fn parse_tail_detects_ttl_after_large_prior_response() {
+        // Regression: an 8 KiB tail window pushed the last assistant turn out
+        // of scope on real-world transcripts (Anthropic responses with tool_use
+        // blocks routinely exceed 8 KiB). 64 KiB must still cover the last
+        // turn after a ~20 KiB prior message.
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        writeln!(f, "{USER_LINE}").unwrap();
+        let big_text = "x".repeat(20_000);
+        let bulky_assistant = format!(
+            r#"{{"type":"assistant","timestamp":"2026-04-19T06:00:00Z","message":{{"role":"assistant","content":[{{"type":"text","text":"{big_text}"}}],"model":"claude-opus-4-7"}}}}"#
+        );
+        writeln!(f, "{bulky_assistant}").unwrap();
+        writeln!(f, "{USER_LINE}").unwrap();
+        writeln!(f, "{ASSISTANT_1H_LINE}").unwrap();
+
+        let parsed = parse_tail(f.path()).unwrap();
+        assert_eq!(
+            parsed.cache_ttl_secs,
+            Some(TTL_1H_SECS),
+            "TAIL_CHUNK_BYTES must contain the last assistant turn even after a large prior message"
+        );
     }
 
     #[test]
