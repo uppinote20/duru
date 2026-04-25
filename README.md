@@ -99,14 +99,14 @@ The active sort column shows a direction arrow in the table header: `↓` for de
 - **Table** — 7 columns: state glyph, short ID, project, mode, last activity, cache TTL, size
 - **Detail** — Fixed 9-row panel showing full session metadata
 
-Cache TTL is shown as a hybrid `mm:ss ████▌·····` bar with color thresholds (green > 50%, yellow 20–50%, red < 20%). Mode is sourced from Claude Code hooks when installed; shows `—` otherwise.
+Cache TTL is shown as a hybrid `mm:ss ████▌·····` bar with color thresholds (green > 50%, yellow 20–50%, red < 20%). The window length follows the session's actual policy — 5 min for `cache_control: ephemeral` (API default) or 60 min for the `ttl: "1h"` form that recent Claude Code versions send. duru reads each session's most recent assistant `usage.cache_creation` to decide the window, per row. Mode is sourced from Claude Code hooks when installed; shows `—` otherwise.
 
 ### State glyph
 
-Two-state, aligned with Anthropic's 5-minute prompt-cache TTL:
+Two-state, aligned with the session's actual prompt-cache TTL window:
 
-- `●` warm — last write within 5 min or hook registry reports alive
-- `○` cold — last write over 5 min, or hook registry reports terminated / dead PID
+- `●` warm — last write within the session's TTL (5 min or 1 h, whichever Claude Code chose) or hook registry reports alive
+- `○` cold — last write past the TTL window, or hook registry reports terminated / dead PID
 
 ## Hooks
 

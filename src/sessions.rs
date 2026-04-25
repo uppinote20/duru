@@ -23,11 +23,16 @@ pub struct SessionEntry {
     pub permission_mode: Option<String>,
     pub registry_source: Option<RegistrySource>,
     pub is_alive: Option<bool>,
+    /// Per-session cache TTL in seconds — 300 (5m) or 3600 (1h) — inferred
+    /// from the transcript's most recent assistant `usage.cache_creation`.
+    /// Defaults to [`TTL_DEFAULT_SECS`] when no signal is available.
+    pub cache_ttl_secs: i64,
 }
 
-/// Two-state model aligned with Anthropic's 5-minute prompt cache TTL:
-/// either the cache is warm (last write within window) or it's cold.
-/// A middle "Idle" grade would be misleading — the cache doesn't have one.
+/// Two-state model aligned with the session's per-entry prompt cache TTL
+/// window (`SessionEntry::cache_ttl_secs`): either the cache is warm (last
+/// write within the window) or it's cold. A middle "Idle" grade would be
+/// misleading — the cache doesn't have one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum State {
     Active,
@@ -110,12 +115,17 @@ pub fn middle_truncate(s: &str, max: usize) -> String {
     format!("{head}…{tail}")
 }
 
-/// Anthropic's default prompt cache TTL in seconds (5 minutes).
-///
-/// Canonical source; `ui::render_ttl_cell` imports it as the bar denominator.
-/// The `State::Active` window is aligned with this value so the glyph visually
-/// signals "cache likely still warm".
-pub const TTL_SECS: i64 = 300;
+/// Anthropic's `cache_control: ephemeral` API default TTL in seconds.
+pub const TTL_5M_SECS: i64 = 300;
+
+/// `ttl: "1h"` form, available since the 1-hour cache went GA.
+pub const TTL_1H_SECS: i64 = 3600;
+
+/// Fallback for sessions where TTL cannot be inferred from the transcript
+/// (new session, lazy-parsed stale file, hooks-only metadata). 5 minutes
+/// matches the API default — biases towards "looks expired" rather than
+/// "looks alive when it isn't".
+pub const TTL_DEFAULT_SECS: i64 = TTL_5M_SECS;
 
 /// First N lines of a transcript scanned to extract session_id, started_at,
 /// and cwd. Enough to skip past `file-history-snapshot` records that sometimes
@@ -136,7 +146,8 @@ const LAZY_PARSE_CUTOFF_SECS: i64 = 86_400; // 24 h
 ///
 /// When a hook registry entry is available, its signals are authoritative:
 /// Terminated flag → Stale; dead pid → Stale. Otherwise falls back to the
-/// pure-mtime heuristic keyed on the 5-minute prompt-cache TTL.
+/// pure-mtime heuristic keyed on the session's per-entry cache TTL
+/// (`entry.cache_ttl_secs`, 5 m or 1 h depending on Claude Code's policy).
 pub fn state_at(entry: &SessionEntry, now: DateTime<Utc>) -> State {
     if let Some(RegistrySource::Terminated) = entry.registry_source {
         return State::Stale;
@@ -145,7 +156,7 @@ pub fn state_at(entry: &SessionEntry, now: DateTime<Utc>) -> State {
         return State::Stale;
     }
     let elapsed = (now - entry.last_activity).num_seconds();
-    if elapsed < TTL_SECS {
+    if elapsed < entry.cache_ttl_secs {
         State::Active
     } else {
         State::Stale
@@ -154,7 +165,7 @@ pub fn state_at(entry: &SessionEntry, now: DateTime<Utc>) -> State {
 
 pub fn cache_ttl_remaining_secs(entry: &SessionEntry, now: DateTime<Utc>) -> i64 {
     let elapsed = (now - entry.last_activity).num_seconds();
-    (TTL_SECS - elapsed).max(0)
+    (entry.cache_ttl_secs - elapsed).max(0)
 }
 
 #[derive(Debug, Default, Clone)]
@@ -202,11 +213,24 @@ pub fn parse_first_record<R: Read>(reader: R) -> FirstRecord {
     out
 }
 
-const TAIL_CHUNK_BYTES: u64 = 8192;
+/// Tail-window size scanned by [`parse_tail`]. Sized to contain the last
+/// assistant turn whole — a single Claude tool_use response can exceed 8 KiB,
+/// so the timestamp-only origin (`8192`) was too small for the new
+/// `cache_creation` detection. Empirical sweep over ~1500 transcripts: 64 KiB
+/// captures the last assistant message in every recent (<24h) case observed.
+/// The lazy-parse cutoff means stale (>24h) files don't pay this cost.
+const TAIL_CHUNK_BYTES: u64 = 65_536;
 
 #[derive(Debug, Default, Clone)]
 pub struct TailRecord {
     pub last_activity: Option<DateTime<Utc>>,
+    /// Cache TTL inferred from the most recent assistant turn's
+    /// `usage.cache_creation` field. `Some(300)` if the session uses 5-minute
+    /// `cache_control: ephemeral` (the API default), `Some(3600)` if it uses
+    /// the 1-hour `ttl: "1h"` form. `None` when no assistant turn carries
+    /// usage info (new session, transcript truncated by tail-scan window, or
+    /// hooks-only metadata) — callers fall back to the canonical default.
+    pub cache_ttl_secs: Option<i64>,
 }
 
 pub fn parse_tail(path: &Path) -> std::io::Result<TailRecord> {
@@ -246,8 +270,43 @@ pub fn parse_tail(path: &Path) -> std::io::Result<TailRecord> {
                 _ => dt_utc,
             });
         }
+        if value.get("type").and_then(|v| v.as_str()) == Some("assistant")
+            && let Some(ttl) = ttl_from_assistant_usage(&value)
+        {
+            // Last assistant turn that *writes* cache entries wins. Pure
+            // cache-read turns return None and leave the stored TTL
+            // untouched, so a mid-session policy switch is followed only
+            // when the new policy actually creates a cache entry.
+            out.cache_ttl_secs = Some(ttl);
+        }
     }
     Ok(out)
+}
+
+/// Reads `message.usage.cache_creation.ephemeral_{5m,1h}_input_tokens` and
+/// returns the corresponding TTL in seconds, or `None` if neither field has
+/// a positive count (no cache writes this turn — e.g. pure cache-read turn,
+/// or an assistant record predating cache_creation telemetry).
+fn ttl_from_assistant_usage(record: &serde_json::Value) -> Option<i64> {
+    let cc = record
+        .get("message")?
+        .get("usage")?
+        .get("cache_creation")?
+        .as_object()?;
+    // Anthropic serialises token counts as JSON integers; `as_u64()` returns
+    // None for any float-formatted value, which we treat as absent. If the
+    // API ever switches to floats this becomes a silent fallback to 5m.
+    let read_u64 = |k: &str| cc.get(k).and_then(|v| v.as_u64()).unwrap_or(0);
+    let one_hour = read_u64("ephemeral_1h_input_tokens");
+    let five_min = read_u64("ephemeral_5m_input_tokens");
+    // 1h precedence: longer window is the safer display when both are non-zero.
+    if one_hour > 0 {
+        Some(TTL_1H_SECS)
+    } else if five_min > 0 {
+        Some(TTL_5M_SECS)
+    } else {
+        None
+    }
 }
 
 #[derive(Debug, Default)]
@@ -448,6 +507,7 @@ fn parse_session_at(path: &Path, now: DateTime<Utc>) -> Option<SessionEntry> {
         permission_mode: None,
         registry_source: None,
         is_alive: None,
+        cache_ttl_secs: tail.cache_ttl_secs.unwrap_or(TTL_DEFAULT_SECS),
     })
 }
 
@@ -463,7 +523,7 @@ fn scan_sessions(claude_dir: &Path) -> Vec<SessionEntry> {
 
 pub fn demo_sessions() -> Vec<SessionEntry> {
     let now = Utc::now();
-    let make = |id: &str, project: &str, secs_ago: i64, size: u64| {
+    let make = |id: &str, project: &str, secs_ago: i64, size: u64, ttl: i64| {
         let last_activity = now - chrono::Duration::seconds(secs_ago);
         SessionEntry {
             session_id: id.to_string(),
@@ -477,6 +537,7 @@ pub fn demo_sessions() -> Vec<SessionEntry> {
             permission_mode: None,
             registry_source: None,
             is_alive: None,
+            cache_ttl_secs: ttl,
         }
     };
     vec![
@@ -485,25 +546,45 @@ pub fn demo_sessions() -> Vec<SessionEntry> {
             "my-webapp",
             12,
             234_000,
+            TTL_DEFAULT_SECS,
         ),
-        make("a3f1e2d4-1234-1234-1234-123456789abc", "duru", 120, 187_000),
+        make(
+            "a3f1e2d4-1234-1234-1234-123456789abc",
+            "duru",
+            120,
+            187_000,
+            TTL_DEFAULT_SECS,
+        ),
         make(
             "b9e73dca-aefb-4a83-88f8-4534127e6281",
             "namuldogam",
             240,
             92_000,
+            TTL_DEFAULT_SECS,
         ),
         make(
             "90515568-bd14-4207-a9f5-2bc9d59973e7",
             "chrome-secret",
             1080,
             412_000,
+            TTL_DEFAULT_SECS,
         ),
         make(
             "f3bc49c4-5db3-4e09-8f60-de8c87654f6b",
             "rust-playground",
             7200,
             1_200_000,
+            TTL_DEFAULT_SECS,
+        ),
+        // One 1h-cache entry so demo / screenshot mode exercises the longer
+        // window. 25 min idle on a 1h cache → still mid-window (would be
+        // Stale on a 5m cache).
+        make(
+            "c2d6a181-8e30-4c79-9b5b-7a2c4cd9f9b1",
+            "long-conversation",
+            1500,
+            540_000,
+            TTL_1H_SECS,
         ),
     ]
 }
@@ -641,6 +722,7 @@ mod tests {
             permission_mode: None,
             registry_source: None,
             is_alive: None,
+            cache_ttl_secs: TTL_DEFAULT_SECS,
         }
     }
 
@@ -849,6 +931,25 @@ mod tests {
     }
 
     #[test]
+    fn state_at_active_under_one_hour_for_1h_ttl_session() {
+        // 30 minutes idle on a 1h-cache session → still Active (would be Stale
+        // under the old 5-minute hardcoded TTL).
+        let now = Utc::now();
+        let mut entry = make_entry("g", now - chrono::Duration::minutes(30));
+        entry.cache_ttl_secs = TTL_1H_SECS;
+        assert_eq!(state_at(&entry, now), State::Active);
+    }
+
+    #[test]
+    fn cache_ttl_remaining_uses_per_entry_ttl() {
+        let now = Utc::now();
+        let mut entry = make_entry("h", now - chrono::Duration::minutes(10));
+        entry.cache_ttl_secs = TTL_1H_SECS;
+        // 10 min elapsed, 1h TTL → ~50 min (3000 sec) remaining
+        assert_eq!(cache_ttl_remaining_secs(&entry, now), 3000);
+    }
+
+    #[test]
     fn sort_by_last_activity_desc() {
         let now = Utc::now();
         let mut entries = vec![
@@ -902,10 +1003,12 @@ mod tests {
     use std::fs;
 
     #[test]
-    fn demo_sessions_returns_five_entries() {
+    fn demo_sessions_returns_six_entries() {
         let demos = demo_sessions();
-        assert_eq!(demos.len(), 5);
+        assert_eq!(demos.len(), 6);
         assert!(demos.iter().any(|e| e.project_name == "my-webapp"));
+        // At least one entry exercises the 1h-TTL render path.
+        assert!(demos.iter().any(|e| e.cache_ttl_secs == TTL_1H_SECS));
     }
 
     #[test]
@@ -987,6 +1090,86 @@ mod tests {
         ]);
         let parsed = parse_tail(file.path()).unwrap();
         assert!(parsed.last_activity.is_some());
+    }
+
+    const ASSISTANT_5M_LINE: &str = r#"{"type":"assistant","timestamp":"2026-04-19T06:05:00Z","message":{"role":"assistant","content":[],"model":"claude-sonnet-4-6","usage":{"cache_creation":{"ephemeral_5m_input_tokens":1234,"ephemeral_1h_input_tokens":0}}}}"#;
+    const ASSISTANT_1H_LINE: &str = r#"{"type":"assistant","timestamp":"2026-04-19T06:06:00Z","message":{"role":"assistant","content":[],"model":"claude-opus-4-7","usage":{"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":4321}}}}"#;
+    const USER_LINE: &str = r#"{"type":"user","timestamp":"2026-04-19T06:00:00Z","message":{"role":"user","content":"hi"}}"#;
+    const ASSISTANT_NO_USAGE: &str = r#"{"type":"assistant","timestamp":"2026-04-19T06:05:00Z","message":{"role":"assistant","content":[],"model":"claude-opus-4-7"}}"#;
+
+    #[test]
+    fn parse_tail_extracts_5m_ttl_from_assistant_usage() {
+        let file = tempfile_with(&[USER_LINE, ASSISTANT_5M_LINE]);
+        let parsed = parse_tail(file.path()).unwrap();
+        assert_eq!(parsed.cache_ttl_secs, Some(TTL_5M_SECS));
+    }
+
+    #[test]
+    fn parse_tail_extracts_1h_ttl_from_assistant_usage() {
+        let file = tempfile_with(&[USER_LINE, ASSISTANT_1H_LINE]);
+        let parsed = parse_tail(file.path()).unwrap();
+        assert_eq!(parsed.cache_ttl_secs, Some(TTL_1H_SECS));
+    }
+
+    #[test]
+    fn parse_tail_returns_none_ttl_when_no_assistant_turn() {
+        let file = tempfile_with(&[USER_LINE]);
+        let parsed = parse_tail(file.path()).unwrap();
+        assert!(parsed.cache_ttl_secs.is_none());
+    }
+
+    #[test]
+    fn parse_tail_returns_none_ttl_when_assistant_lacks_usage() {
+        let file = tempfile_with(&[USER_LINE, ASSISTANT_NO_USAGE]);
+        let parsed = parse_tail(file.path()).unwrap();
+        assert!(parsed.cache_ttl_secs.is_none());
+    }
+
+    #[test]
+    fn parse_tail_last_assistant_wins_when_policy_changes_mid_session() {
+        // Earlier 5m turn, later 1h turn → 1h is the active policy.
+        let file = tempfile_with(&[USER_LINE, ASSISTANT_5M_LINE, USER_LINE, ASSISTANT_1H_LINE]);
+        let parsed = parse_tail(file.path()).unwrap();
+        assert_eq!(parsed.cache_ttl_secs, Some(TTL_1H_SECS));
+    }
+
+    #[test]
+    fn ttl_from_assistant_usage_prefers_1h_when_both_nonzero() {
+        let line = r#"{"type":"assistant","message":{"role":"assistant","content":[],"model":"x","usage":{"cache_creation":{"ephemeral_5m_input_tokens":100,"ephemeral_1h_input_tokens":200}}}}"#;
+        let v: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_eq!(ttl_from_assistant_usage(&v), Some(TTL_1H_SECS));
+    }
+
+    #[test]
+    fn parse_tail_last_assistant_wins_reverse_order() {
+        // Earlier 1h, later 5m → 5m is the active policy.
+        let file = tempfile_with(&[USER_LINE, ASSISTANT_1H_LINE, USER_LINE, ASSISTANT_5M_LINE]);
+        let parsed = parse_tail(file.path()).unwrap();
+        assert_eq!(parsed.cache_ttl_secs, Some(TTL_5M_SECS));
+    }
+
+    #[test]
+    fn parse_tail_detects_ttl_after_large_prior_response() {
+        // Regression: an 8 KiB tail window pushed the last assistant turn out
+        // of scope on real-world transcripts (Anthropic responses with tool_use
+        // blocks routinely exceed 8 KiB). 64 KiB must still cover the last
+        // turn after a ~20 KiB prior message.
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        writeln!(f, "{USER_LINE}").unwrap();
+        let big_text = "x".repeat(20_000);
+        let bulky_assistant = format!(
+            r#"{{"type":"assistant","timestamp":"2026-04-19T06:00:00Z","message":{{"role":"assistant","content":[{{"type":"text","text":"{big_text}"}}],"model":"claude-opus-4-7"}}}}"#
+        );
+        writeln!(f, "{bulky_assistant}").unwrap();
+        writeln!(f, "{USER_LINE}").unwrap();
+        writeln!(f, "{ASSISTANT_1H_LINE}").unwrap();
+
+        let parsed = parse_tail(f.path()).unwrap();
+        assert_eq!(
+            parsed.cache_ttl_secs,
+            Some(TTL_1H_SECS),
+            "TAIL_CHUNK_BYTES must contain the last assistant turn even after a large prior message"
+        );
     }
 
     #[test]
