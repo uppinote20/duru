@@ -17,14 +17,9 @@ pub trait SecretBackend {
     fn remove(&self) -> io::Result<()>;
 }
 
-#[derive(Default)]
 pub struct KeyringBackend;
 
 impl KeyringBackend {
-    pub fn new() -> Self {
-        Self
-    }
-
     fn entry(&self) -> io::Result<keyring::Entry> {
         keyring::Entry::new(SERVICE, ACCOUNT).map_err(map_keyring_err)
     }
@@ -111,6 +106,9 @@ pub fn has_api_key(backend: &dyn SecretBackend) -> io::Result<bool> {
 pub fn redact_key(key: &str) -> String {
     const PREFIX_LEN: usize = 9;
     let trimmed = key.trim();
+    // ≤10 chars (prefix + at least one hidden char) → fully redacted.
+    // Showing a 9-char prefix of an 11-char input would only hide 2 chars,
+    // which is too few to call "redacted".
     if trimmed.chars().count() <= PREFIX_LEN + 1 {
         return "…".to_string();
     }

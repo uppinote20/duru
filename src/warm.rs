@@ -58,8 +58,16 @@ pub enum WarmAction {
 
 pub fn run(home: &Path, action: WarmAction) -> io::Result<()> {
     preflight(home)?;
-    let backend = KeyringBackend::new();
-    dispatch(&backend, action, &mut io::stdin().lock(), &mut io::stdout())
+    let backend = KeyringBackend;
+    let interactive = io::stdin().is_terminal();
+    dispatch_with_env(
+        &backend,
+        action,
+        &mut io::stdin().lock(),
+        &mut io::stdout(),
+        interactive,
+        |v| std::env::var(v).ok(),
+    )
 }
 
 pub fn preflight(home: &Path) -> io::Result<()> {
@@ -72,20 +80,12 @@ pub fn preflight(home: &Path) -> io::Result<()> {
     ))
 }
 
-pub fn dispatch<B: SecretBackend>(
-    backend: &B,
-    action: WarmAction,
-    stdin: &mut impl io::BufRead,
-    stdout: &mut impl Write,
-) -> io::Result<()> {
-    dispatch_with_env(backend, action, stdin, stdout, |v| std::env::var(v).ok())
-}
-
 fn dispatch_with_env<B, F>(
     backend: &B,
     action: WarmAction,
     stdin: &mut impl io::BufRead,
     stdout: &mut impl Write,
+    interactive: bool,
     env_lookup: F,
 ) -> io::Result<()>
 where
@@ -94,7 +94,7 @@ where
 {
     match action {
         WarmAction::SetKey { from_env } => {
-            handle_set_key(backend, from_env, env_lookup, stdin, stdout)
+            handle_set_key(backend, from_env, env_lookup, interactive, stdin, stdout)
         }
         WarmAction::CheckKey => handle_check_key(backend, stdout),
         WarmAction::UnsetKey => handle_unset_key(backend, stdout),
@@ -126,6 +126,7 @@ fn handle_set_key<B, F>(
     backend: &B,
     from_env: Option<String>,
     env_lookup: F,
+    interactive: bool,
     stdin: &mut impl io::BufRead,
     stdout: &mut impl Write,
 ) -> io::Result<()>
@@ -137,7 +138,7 @@ where
         Some(var) => env_lookup(&var).ok_or_else(|| {
             io::Error::new(io::ErrorKind::NotFound, format!("env var {var} is not set"))
         })?,
-        None => read_key_from_stdin(stdin, stdout)?,
+        None => read_key_from_stdin(interactive, stdin, stdout)?,
     };
     secrets::set_api_key(backend, &raw)?;
     writeln!(stdout, "api key stored in keychain")?;
@@ -145,10 +146,11 @@ where
 }
 
 fn read_key_from_stdin(
+    interactive: bool,
     stdin: &mut impl io::BufRead,
     stdout: &mut impl Write,
 ) -> io::Result<String> {
-    if io::stdin().is_terminal() {
+    if interactive {
         write!(stdout, "Paste Anthropic API key (will not echo): ")?;
         stdout.flush()?;
     }
@@ -204,7 +206,8 @@ mod tests {
     fn dispatch_to_string(backend: &MemoryBackend, action: WarmAction, stdin: &str) -> String {
         let mut out = Vec::new();
         let mut input = stdin.as_bytes();
-        dispatch(backend, action, &mut input, &mut out).expect("dispatch");
+        dispatch_with_env(backend, action, &mut input, &mut out, false, |_| None)
+            .expect("dispatch");
         String::from_utf8(out).expect("utf8")
     }
 
@@ -240,11 +243,13 @@ mod tests {
         let backend = MemoryBackend::new();
         let mut out = Vec::new();
         let mut input = "\n".as_bytes();
-        let err = dispatch(
+        let err = dispatch_with_env(
             &backend,
             WarmAction::SetKey { from_env: None },
             &mut input,
             &mut out,
+            false,
+            |_| None,
         )
         .unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
@@ -263,6 +268,7 @@ mod tests {
             },
             &mut input,
             &mut out,
+            false,
             |v| (v == "ANTHROPIC_API_KEY").then(|| "sk-ant-from-env".to_string()),
         )
         .expect("dispatch");
@@ -283,10 +289,29 @@ mod tests {
             },
             &mut input,
             &mut out,
+            false,
             |_| None,
         )
         .unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn read_key_from_stdin_does_not_prompt_when_non_interactive() {
+        let mut input = "sk-ant-direct\n".as_bytes();
+        let mut out = Vec::new();
+        let raw = read_key_from_stdin(false, &mut input, &mut out).expect("read");
+        assert_eq!(raw.trim(), "sk-ant-direct");
+        assert!(out.is_empty(), "non-interactive must not print a prompt");
+    }
+
+    #[test]
+    fn read_key_from_stdin_prompts_when_interactive() {
+        let mut input = "sk-ant-direct\n".as_bytes();
+        let mut out = Vec::new();
+        read_key_from_stdin(true, &mut input, &mut out).expect("read");
+        let prompt = String::from_utf8(out).unwrap();
+        assert!(prompt.contains("Paste"), "interactive must print a prompt");
     }
 
     #[test]
