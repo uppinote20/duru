@@ -133,6 +133,8 @@ duru is safe to run without installing hooks — it falls back to mtime-based in
 
 The Anthropic API key is stored in the OS keychain — Keychain on macOS, Credential Manager on Windows, Secret Service (GNOME Keyring / KWallet) on Linux. The key is never written to disk by duru and never accepted as a positional argument (which would leak into shell history).
 
+Linux source builds need `libdbus-1-dev` and `pkg-config` (Debian/Ubuntu: `apt-get install libdbus-1-dev pkg-config`; Fedora: `dnf install dbus-devel pkgconf-pkg-config`). The Homebrew bottle and prebuilt release binaries already bundle this; the requirement only applies to `cargo install --path .`.
+
 ```bash
 duru warm set-key                         # paste key via stdin (no echo)
 duru warm set-key --from-env VAR          # pull from an env var
