@@ -29,9 +29,10 @@ pub struct SessionEntry {
     pub cache_ttl_secs: i64,
 }
 
-/// Two-state model aligned with Anthropic's 5-minute prompt cache TTL:
-/// either the cache is warm (last write within window) or it's cold.
-/// A middle "Idle" grade would be misleading — the cache doesn't have one.
+/// Two-state model aligned with the session's per-entry prompt cache TTL
+/// window (`SessionEntry::cache_ttl_secs`): either the cache is warm (last
+/// write within the window) or it's cold. A middle "Idle" grade would be
+/// misleading — the cache doesn't have one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum State {
     Active,
@@ -150,7 +151,8 @@ const LAZY_PARSE_CUTOFF_SECS: i64 = 86_400; // 24 h
 ///
 /// When a hook registry entry is available, its signals are authoritative:
 /// Terminated flag → Stale; dead pid → Stale. Otherwise falls back to the
-/// pure-mtime heuristic keyed on the 5-minute prompt-cache TTL.
+/// pure-mtime heuristic keyed on the session's per-entry cache TTL
+/// (`entry.cache_ttl_secs`, 5 m or 1 h depending on Claude Code's policy).
 pub fn state_at(entry: &SessionEntry, now: DateTime<Utc>) -> State {
     if let Some(RegistrySource::Terminated) = entry.registry_source {
         return State::Stale;
@@ -276,8 +278,10 @@ pub fn parse_tail(path: &Path) -> std::io::Result<TailRecord> {
         if value.get("type").and_then(|v| v.as_str()) == Some("assistant")
             && let Some(ttl) = ttl_from_assistant_usage(&value)
         {
-            // Last assistant turn wins — the most recent policy is the one
-            // duru should mirror in its display.
+            // Last assistant turn that *writes* cache entries wins. Pure
+            // cache-read turns return None and leave the stored TTL
+            // untouched, so a mid-session policy switch is followed only
+            // when the new policy actually creates a cache entry.
             out.cache_ttl_secs = Some(ttl);
         }
     }
@@ -294,9 +298,15 @@ fn ttl_from_assistant_usage(record: &serde_json::Value) -> Option<i64> {
         .get("usage")?
         .get("cache_creation")?
         .as_object()?;
+    // Anthropic serialises token counts as JSON integers; `as_u64()` returns
+    // None for any float-formatted value, which we treat as absent. If the
+    // API ever switches to floats this becomes a silent fallback to 5m.
     let read_u64 = |k: &str| cc.get(k).and_then(|v| v.as_u64()).unwrap_or(0);
     let one_hour = read_u64("ephemeral_1h_input_tokens");
     let five_min = read_u64("ephemeral_5m_input_tokens");
+    // 1h takes precedence when both are non-zero — extremely unlikely from
+    // Anthropic's API but the longer window is the safer display choice
+    // (over-shows time remaining rather than under-shows it).
     if one_hour > 0 {
         Some(TTL_1H_SECS)
     } else if five_min > 0 {
@@ -563,6 +573,18 @@ pub fn demo_sessions() -> Vec<SessionEntry> {
             7200,
             1_200_000,
         ),
+        // One 1h-cache entry so demo / screenshot mode exercises the longer
+        // window in the rendered table. 25 min idle on a 1h cache → still
+        // mid-window (would be Stale on a 5m cache).
+        SessionEntry {
+            cache_ttl_secs: TTL_1H_SECS,
+            ..make(
+                "c2d6a181-8e30-4c79-9b5b-7a2c4cd9f9b1",
+                "long-conversation",
+                1500,
+                540_000,
+            )
+        },
     ]
 }
 
@@ -980,10 +1002,12 @@ mod tests {
     use std::fs;
 
     #[test]
-    fn demo_sessions_returns_five_entries() {
+    fn demo_sessions_returns_six_entries() {
         let demos = demo_sessions();
-        assert_eq!(demos.len(), 5);
+        assert_eq!(demos.len(), 6);
         assert!(demos.iter().any(|e| e.project_name == "my-webapp"));
+        // At least one entry exercises the 1h-TTL render path.
+        assert!(demos.iter().any(|e| e.cache_ttl_secs == TTL_1H_SECS));
     }
 
     #[test]
@@ -1106,6 +1130,13 @@ mod tests {
         let file = tempfile_with(&[USER_LINE, ASSISTANT_5M_LINE, USER_LINE, ASSISTANT_1H_LINE]);
         let parsed = parse_tail(file.path()).unwrap();
         assert_eq!(parsed.cache_ttl_secs, Some(TTL_1H_SECS));
+    }
+
+    #[test]
+    fn ttl_from_assistant_usage_prefers_1h_when_both_nonzero() {
+        let line = r#"{"type":"assistant","message":{"role":"assistant","content":[],"model":"x","usage":{"cache_creation":{"ephemeral_5m_input_tokens":100,"ephemeral_1h_input_tokens":200}}}}"#;
+        let v: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_eq!(ttl_from_assistant_usage(&v), Some(TTL_1H_SECS));
     }
 
     #[test]
