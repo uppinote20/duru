@@ -68,6 +68,7 @@ Press `Tab` to switch between two modes:
 | `←→` / `hl` | Switch pane |
 | `Enter` | Enter next pane |
 | `e` | Edit selected file in `$EDITOR` |
+| `d` | Delete selected memory file (asks `y/N`; global `CLAUDE.md` and `MEMORY.md` index are protected) |
 | `Tab` | Switch to Sessions mode |
 | `q` | Quit |
 

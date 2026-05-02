@@ -37,7 +37,7 @@ pub fn render(frame: &mut Frame, app: &App, theme: &Theme) {
         AppMode::Sessions => render_sessions_layout(frame, app, theme, outer[1]),
     }
 
-    render_help_bar(frame, app.mode, theme, outer[2]);
+    render_help_bar(frame, app, theme, outer[2]);
 }
 
 fn render_memory_layout(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) {
@@ -376,12 +376,27 @@ fn render_preview_pane(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) 
     frame.render_widget(paragraph, area);
 }
 
-fn render_help_bar(frame: &mut Frame, mode: AppMode, theme: &Theme, area: Rect) {
-    let entries: &[(&str, &str)] = match mode {
+fn render_help_bar(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) {
+    if let Some(path) = &app.delete_confirm {
+        let filename = path.file_name().unwrap_or_default().to_string_lossy();
+        let prompt = format!(" Delete {filename}? (y/N)");
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                prompt,
+                Style::default().fg(theme.love).add_modifier(Modifier::BOLD),
+            )))
+            .style(Style::default().bg(theme.surface)),
+            area,
+        );
+        return;
+    }
+
+    let entries: &[(&str, &str)] = match app.mode {
         AppMode::Memory => &[
             ("↑↓", "navigate"),
             ("←→", "pane"),
             ("e", "edit"),
+            ("d", "delete"),
             ("Tab", "sessions"),
             ("q", "quit"),
         ],
