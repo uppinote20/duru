@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::scan::{FileKind, Project};
+use crate::scan::{FileKind, MemoryFile, Project};
 use crate::sessions::{SessionCache, SessionEntry, SessionsSort};
 
 /// Sessions-mode refresh cadence when any session had activity in the last
@@ -53,9 +53,10 @@ pub struct App {
     pub content: String,
     pub should_quit: bool,
     pub wants_edit: bool,
-    /// Modal state — `Some(path)` when `d` has armed a delete confirmation.
-    /// While `Some`, all keys go through the y/N flow in `handle_key`.
-    pub delete_confirm: Option<PathBuf>,
+    /// Path armed by `d` and awaiting `y/N`. Stays `Option<PathBuf>` for
+    /// now because there is only one modal; if a second one lands (e.g.
+    /// rename), promote to a `Modal` enum.
+    pub(crate) delete_confirm: Option<PathBuf>,
 
     // Sessions mode
     pub mode: AppMode,
@@ -104,10 +105,13 @@ impl App {
         self.projects.get(self.project_index)
     }
 
-    pub fn selected_file_path(&self) -> Option<&Path> {
+    pub fn selected_file(&self) -> Option<&MemoryFile> {
         self.selected_project()
             .and_then(|p| p.files.get(self.file_index))
-            .map(|f| f.path.as_path())
+    }
+
+    pub fn selected_file_path(&self) -> Option<&Path> {
+        self.selected_file().map(|f| f.path.as_path())
     }
 
     pub fn load_content(&mut self) {
@@ -128,10 +132,8 @@ impl App {
             self.should_quit = true;
             return;
         }
-        // Modal: any key during a delete-confirm prompt either confirms (y)
-        // or cancels (everything else, including Tab and navigation). This
-        // sits above the Tab dispatch so the modal can't be accidentally
-        // bypassed by a mode toggle while still armed.
+        // Sits above the Tab dispatch so a mode toggle can't bypass the
+        // modal while it's armed.
         if self.delete_confirm.is_some() {
             if matches!(key.code, KeyCode::Char('y') | KeyCode::Char('Y')) {
                 self.execute_delete();
@@ -154,15 +156,14 @@ impl App {
         if !matches!(self.focus, Pane::Files | Pane::Preview) {
             return;
         }
-        let Some(file) = self
-            .selected_project()
-            .and_then(|p| p.files.get(self.file_index))
-        else {
+        let Some(file) = self.selected_file() else {
             return;
         };
         // Refuse the user's main personal instructions — accidental loss
         // via TUI navigation has higher cost than the convenience of
         // in-app deletion. `rm` from a shell is still available.
+        // TODO(duru-flash-hint): surface this refusal via a flash hint
+        // once the hint subsystem lands; today the user gets no signal.
         if file.kind == FileKind::GlobalClaudeMd {
             return;
         }
@@ -180,17 +181,16 @@ impl App {
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
                 self.apply_delete_to_state(&path);
             }
-            Err(_) => {
-                // Permission denied or similar — file stays in the list,
-                // user can retry. Silent skip until a flash-hint UI lands.
-            }
+            // TODO(duru-flash-hint): surface permission/IO errors when the
+            // hint subsystem lands. Today the file stays in the list so
+            // the user can retry, but they get no signal that the attempt
+            // failed.
+            Err(_) => {}
         }
     }
 
     fn apply_delete_to_state(&mut self, path: &Path) {
-        let project_now_empty;
-        let new_files_len;
-        {
+        let (project_now_empty, new_files_len) = {
             let Some(project) = self.projects.get_mut(self.project_index) else {
                 return;
             };
@@ -198,19 +198,16 @@ impl App {
                 return;
             };
             project.files.remove(file_pos);
-            project_now_empty = project.files.is_empty();
-            new_files_len = project.files.len();
-        }
+            (project.files.is_empty(), project.files.len())
+        };
 
         if project_now_empty {
             self.projects.remove(self.project_index);
-            if self.project_index >= self.projects.len() {
-                self.project_index = self.projects.len().saturating_sub(1);
-            }
+            clamp_index(&mut self.project_index, self.projects.len());
             self.file_index = 0;
             self.focus = Pane::Projects;
-        } else if self.file_index >= new_files_len {
-            self.file_index = new_files_len - 1;
+        } else {
+            clamp_index(&mut self.file_index, new_files_len);
         }
         self.load_content();
     }
@@ -275,11 +272,7 @@ impl App {
     }
 
     pub fn clamp_session_index(&mut self) {
-        if self.sessions.is_empty() {
-            self.session_index = 0;
-        } else if self.session_index >= self.sessions.len() {
-            self.session_index = self.sessions.len() - 1;
-        }
+        clamp_index(&mut self.session_index, self.sessions.len());
     }
 
     pub fn refresh_sessions(&mut self, claude_dir: &Path) {
@@ -434,6 +427,12 @@ impl App {
             Pane::Preview => Pane::Preview,
         };
     }
+}
+
+/// Clamp an index into a Vec of length `len`. Empty Vec → index 0; in
+/// bounds → unchanged; over the end → last element.
+fn clamp_index(index: &mut usize, len: usize) {
+    *index = if len == 0 { 0 } else { (*index).min(len - 1) };
 }
 
 #[cfg(test)]
@@ -856,9 +855,8 @@ mod tests {
 
     // --- Memory file delete (issue #40) ---
 
-    /// Build an App rooted in a tempdir with one project containing the
-    /// requested files actually written to disk, so delete tests can
-    /// verify both fs removal and state mutation.
+    /// Real on-disk files so `fs::remove_file` actually has something to
+    /// remove. Returns the TempDir to keep it alive for the test scope.
     fn app_with_real_files(files: &[(FileKind, &str)]) -> (tempfile::TempDir, App) {
         let tmp = tempfile::tempdir().unwrap();
         let project_dir = tmp.path().join("proj");

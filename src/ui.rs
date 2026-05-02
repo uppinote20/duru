@@ -378,10 +378,7 @@ fn render_preview_pane(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) 
 
 fn render_help_bar(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) {
     if let Some(path) = &app.delete_confirm {
-        let filename = path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
+        let filename = path.file_name().unwrap_or_default().to_string_lossy();
         let prompt = format!(" Delete {filename}? (y/N)");
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
