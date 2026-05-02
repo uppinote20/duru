@@ -406,6 +406,7 @@ fn render_help_bar(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) {
             ("s", "sort"),
             ("S", "reverse"),
             ("r", "refresh"),
+            ("J", "jump"),
             ("Tab", "memory"),
             ("q", "quit"),
         ],

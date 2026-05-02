@@ -82,6 +82,7 @@ Press `Tab` to switch between two modes:
 | `S` | Reverse sort direction (toggle asc/desc) |
 | `r` | Force refresh |
 | `g` `G` | Jump to top / bottom |
+| `J` | Jump to selected session's project CLAUDE.md (Memory mode) |
 | `Tab` | Switch to Memory mode |
 | `q` | Quit |
 
