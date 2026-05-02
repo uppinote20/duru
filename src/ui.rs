@@ -391,6 +391,7 @@ fn render_help_bar(frame: &mut Frame, mode: AppMode, theme: &Theme, area: Rect) 
             ("s", "sort"),
             ("S", "reverse"),
             ("r", "refresh"),
+            ("J", "jump"),
             ("Tab", "memory"),
             ("q", "quit"),
         ],
