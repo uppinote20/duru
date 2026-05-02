@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::scan::Project;
+use crate::scan::{FileKind, MemoryFile, Project};
 use crate::sessions::{SessionCache, SessionEntry, SessionsSort};
 
 /// Sessions-mode refresh cadence when any session had activity in the last
@@ -179,8 +179,33 @@ impl App {
                 self.wants_refresh = true;
             }
             KeyCode::Char('r') => self.wants_refresh = true,
+            KeyCode::Char('J') => self.jump_to_project_memory(self.session_index),
             _ => {}
         }
+    }
+
+    /// Jump from a Sessions row to that project's memory in Memory mode.
+    /// Silent no-op if the index is out of range or the project name does
+    /// not match any scanned project (e.g. project deleted while Sessions
+    /// list still has its registry entry).
+    fn jump_to_project_memory(&mut self, session_index: usize) {
+        let Some(entry) = self.sessions.get(session_index) else {
+            return;
+        };
+        let Some(project_idx) = self
+            .projects
+            .iter()
+            .position(|p| p.name == entry.project_name)
+        else {
+            return;
+        };
+        let file_idx = pick_jump_target(&self.projects[project_idx].files);
+
+        self.mode = AppMode::Memory;
+        self.focus = Pane::Preview;
+        self.project_index = project_idx;
+        self.file_index = file_idx;
+        self.load_content();
     }
 
     fn cycle_sort(&mut self) {
@@ -351,6 +376,16 @@ impl App {
             Pane::Preview => Pane::Preview,
         };
     }
+}
+
+/// File priority for the Sessions → Memory jump:
+/// CLAUDE.md (project or global) > MEMORY.md > first file.
+fn pick_jump_target(files: &[MemoryFile]) -> usize {
+    files
+        .iter()
+        .position(|f| matches!(f.kind, FileKind::ProjectClaudeMd | FileKind::GlobalClaudeMd))
+        .or_else(|| files.iter().position(|f| f.kind == FileKind::MemoryIndex))
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -769,5 +804,215 @@ mod tests {
             files: vec![],
         }]);
         assert_eq!(app.selected_file_path(), None);
+    }
+
+    // --- Jump-to-Memory (issue #11) ---
+
+    fn make_jump_test_session(project_name: &str) -> SessionEntry {
+        SessionEntry {
+            session_id: format!("sess-{project_name}"),
+            short_id: format!("s-{project_name}"),
+            project_name: project_name.to_string(),
+            cwd: None,
+            transcript_path: PathBuf::from(format!("/tmp/{project_name}.jsonl")),
+            started_at: None,
+            last_activity: chrono::Utc::now(),
+            file_size: 1000,
+            permission_mode: None,
+            registry_source: None,
+            is_alive: None,
+            cache_ttl_secs: 300,
+        }
+    }
+
+    fn make_jump_test_projects() -> Vec<Project> {
+        vec![
+            Project {
+                name: "GLOBAL".to_string(),
+                path: PathBuf::from("/tmp/jump/global"),
+                files: vec![MemoryFile {
+                    kind: FileKind::GlobalClaudeMd,
+                    path: PathBuf::from("/tmp/jump/global/CLAUDE.md"),
+                    name: "CLAUDE.md".to_string(),
+                    size: 100,
+                }],
+            },
+            // alpha: has CLAUDE.md (should win priority)
+            Project {
+                name: "alpha".to_string(),
+                path: PathBuf::from("/tmp/jump/alpha"),
+                files: vec![
+                    MemoryFile {
+                        kind: FileKind::Memory,
+                        path: PathBuf::from("/tmp/jump/alpha/notes.md"),
+                        name: "notes.md".to_string(),
+                        size: 30,
+                    },
+                    MemoryFile {
+                        kind: FileKind::ProjectClaudeMd,
+                        path: PathBuf::from("/tmp/jump/alpha/CLAUDE.md"),
+                        name: "CLAUDE.md".to_string(),
+                        size: 200,
+                    },
+                ],
+            },
+            // beta: only MEMORY.md (no CLAUDE.md)
+            Project {
+                name: "beta".to_string(),
+                path: PathBuf::from("/tmp/jump/beta"),
+                files: vec![
+                    MemoryFile {
+                        kind: FileKind::Memory,
+                        path: PathBuf::from("/tmp/jump/beta/aaa.md"),
+                        name: "aaa.md".to_string(),
+                        size: 10,
+                    },
+                    MemoryFile {
+                        kind: FileKind::MemoryIndex,
+                        path: PathBuf::from("/tmp/jump/beta/MEMORY.md"),
+                        name: "MEMORY.md".to_string(),
+                        size: 50,
+                    },
+                ],
+            },
+            // gamma: only generic memory files (no CLAUDE.md, no MEMORY.md)
+            Project {
+                name: "gamma".to_string(),
+                path: PathBuf::from("/tmp/jump/gamma"),
+                files: vec![MemoryFile {
+                    kind: FileKind::Memory,
+                    path: PathBuf::from("/tmp/jump/gamma/first.md"),
+                    name: "first.md".to_string(),
+                    size: 20,
+                }],
+            },
+        ]
+    }
+
+    fn app_with_jump_fixture() -> App {
+        let mut app = App::new(make_jump_test_projects());
+        app.sessions = vec![
+            make_jump_test_session("alpha"),       // [0] → projects[1]
+            make_jump_test_session("beta"),        // [1] → projects[2]
+            make_jump_test_session("gamma"),       // [2] → projects[3]
+            make_jump_test_session("GLOBAL"),      // [3] → projects[0]
+            make_jump_test_session("nonexistent"), // [4] → no match
+        ];
+        app.mode = AppMode::Sessions;
+        app
+    }
+
+    #[test]
+    fn jump_switches_to_memory_mode_and_focuses_preview() {
+        let mut app = app_with_jump_fixture();
+        app.session_index = 0; // alpha
+        app.handle_key(KeyEvent::new(KeyCode::Char('J'), KeyModifiers::SHIFT));
+        assert_eq!(app.mode, AppMode::Memory);
+        assert_eq!(app.focus, Pane::Preview);
+    }
+
+    #[test]
+    fn jump_picks_project_claude_md_when_present() {
+        let mut app = app_with_jump_fixture();
+        app.session_index = 0; // alpha — has CLAUDE.md at file_index 1
+        app.handle_key(KeyEvent::new(KeyCode::Char('J'), KeyModifiers::SHIFT));
+        assert_eq!(app.project_index, 1);
+        // CLAUDE.md is at index 1 in the alpha project (after notes.md at 0)
+        assert_eq!(app.file_index, 1);
+        assert_eq!(
+            app.projects[app.project_index].files[app.file_index].kind,
+            FileKind::ProjectClaudeMd
+        );
+    }
+
+    #[test]
+    fn jump_picks_memory_index_when_no_claude_md() {
+        let mut app = app_with_jump_fixture();
+        app.session_index = 1; // beta — has MEMORY.md but no CLAUDE.md
+        app.handle_key(KeyEvent::new(KeyCode::Char('J'), KeyModifiers::SHIFT));
+        assert_eq!(app.project_index, 2);
+        assert_eq!(
+            app.projects[app.project_index].files[app.file_index].kind,
+            FileKind::MemoryIndex
+        );
+    }
+
+    #[test]
+    fn jump_picks_first_file_when_no_claude_or_memory_index() {
+        let mut app = app_with_jump_fixture();
+        app.session_index = 2; // gamma — only generic memory files
+        app.handle_key(KeyEvent::new(KeyCode::Char('J'), KeyModifiers::SHIFT));
+        assert_eq!(app.project_index, 3);
+        assert_eq!(app.file_index, 0);
+    }
+
+    #[test]
+    fn jump_to_global_session_picks_global_claude_md() {
+        let mut app = app_with_jump_fixture();
+        app.session_index = 3; // GLOBAL session
+        // Perturb initial Memory-mode state so the test actually verifies the jump.
+        app.project_index = 2;
+        app.handle_key(KeyEvent::new(KeyCode::Char('J'), KeyModifiers::SHIFT));
+        assert_eq!(app.mode, AppMode::Memory);
+        assert_eq!(app.project_index, 0);
+        assert_eq!(
+            app.projects[app.project_index].files[app.file_index].kind,
+            FileKind::GlobalClaudeMd
+        );
+    }
+
+    #[test]
+    fn jump_with_unknown_project_keeps_mode_unchanged() {
+        let mut app = app_with_jump_fixture();
+        app.session_index = 4; // nonexistent project
+        let prior_focus = app.focus;
+        let prior_project = app.project_index;
+        app.handle_key(KeyEvent::new(KeyCode::Char('J'), KeyModifiers::SHIFT));
+        assert_eq!(app.mode, AppMode::Sessions, "must stay in Sessions");
+        assert_eq!(app.focus, prior_focus);
+        assert_eq!(app.project_index, prior_project);
+    }
+
+    #[test]
+    fn jump_with_empty_session_list_is_noop() {
+        let mut app = App::new(make_jump_test_projects());
+        app.sessions.clear();
+        app.mode = AppMode::Sessions;
+        app.session_index = 0;
+        app.handle_key(KeyEvent::new(KeyCode::Char('J'), KeyModifiers::SHIFT));
+        assert_eq!(app.mode, AppMode::Sessions);
+    }
+
+    #[test]
+    fn jump_works_from_detail_pane_focus() {
+        let mut app = app_with_jump_fixture();
+        app.session_index = 0;
+        app.sessions_focus = SessionsPane::Detail;
+        app.handle_key(KeyEvent::new(KeyCode::Char('J'), KeyModifiers::SHIFT));
+        assert_eq!(app.mode, AppMode::Memory);
+        assert_eq!(app.project_index, 1);
+    }
+
+    #[test]
+    fn tab_after_jump_returns_to_sessions() {
+        let mut app = app_with_jump_fixture();
+        app.session_index = 0;
+        app.handle_key(KeyEvent::new(KeyCode::Char('J'), KeyModifiers::SHIFT));
+        assert_eq!(app.mode, AppMode::Memory);
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(app.mode, AppMode::Sessions);
+    }
+
+    #[test]
+    fn jump_in_memory_mode_is_ignored() {
+        // J is a Sessions-mode-only key. In Memory mode, pressing it
+        // should not crash and should not change project_index.
+        let mut app = App::new(make_jump_test_projects());
+        app.sessions = vec![make_jump_test_session("alpha")];
+        app.mode = AppMode::Memory;
+        app.project_index = 0;
+        app.handle_key(KeyEvent::new(KeyCode::Char('J'), KeyModifiers::SHIFT));
+        assert_eq!(app.mode, AppMode::Memory);
+        assert_eq!(app.project_index, 0);
     }
 }
