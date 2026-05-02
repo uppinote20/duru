@@ -159,12 +159,13 @@ impl App {
         let Some(file) = self.selected_file() else {
             return;
         };
-        // Refuse the user's main personal instructions — accidental loss
-        // via TUI navigation has higher cost than the convenience of
-        // in-app deletion. `rm` from a shell is still available.
+        // GlobalClaudeMd: user's main personal instructions — accidental
+        // loss is high-cost. MemoryIndex (MEMORY.md): deleting orphans
+        // every memory file the index references; the auto-memory tree
+        // breaks invisibly. Both stay deletable from a shell.
         // TODO(duru-flash-hint): surface this refusal via a flash hint
         // once the hint subsystem lands; today the user gets no signal.
-        if file.kind == FileKind::GlobalClaudeMd {
+        if matches!(file.kind, FileKind::GlobalClaudeMd | FileKind::MemoryIndex) {
             return;
         }
         self.delete_confirm = Some(file.path.clone());
@@ -175,7 +176,7 @@ impl App {
             return;
         };
         match fs::remove_file(&path) {
-            Ok(_) => self.apply_delete_to_state(&path),
+            Ok(()) => self.apply_delete_to_state(&path),
             // File already gone (race with external rm) — the goal is
             // achieved, sync state to match disk.
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
@@ -937,6 +938,18 @@ mod tests {
     }
 
     #[test]
+    fn delete_refuses_memory_index() {
+        // MEMORY.md indexes the auto-memory tree — deleting it orphans
+        // every memory file it references.
+        let (_tmp, mut app) = app_with_real_files(&[(FileKind::MemoryIndex, "MEMORY.md")]);
+        app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        assert!(
+            app.delete_confirm.is_none(),
+            "MEMORY.md must not be deletable from duru"
+        );
+    }
+
+    #[test]
     fn delete_y_after_arm_removes_file_from_disk() {
         let (_tmp, mut app) = app_with_real_files(&[(FileKind::Memory, "notes.md")]);
         let path = app.selected_file_path().unwrap().to_path_buf();
@@ -946,15 +959,16 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
 
         assert!(!path.exists(), "file should be removed from disk");
-        assert!(app.delete_confirm.is_none(), "modal must clear after confirm");
+        assert!(
+            app.delete_confirm.is_none(),
+            "modal must clear after confirm"
+        );
     }
 
     #[test]
     fn delete_y_after_arm_removes_file_from_project_state() {
-        let (_tmp, mut app) = app_with_real_files(&[
-            (FileKind::Memory, "a.md"),
-            (FileKind::Memory, "b.md"),
-        ]);
+        let (_tmp, mut app) =
+            app_with_real_files(&[(FileKind::Memory, "a.md"), (FileKind::Memory, "b.md")]);
         app.file_index = 0; // delete a.md
         app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
         app.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
@@ -984,10 +998,8 @@ mod tests {
 
     #[test]
     fn delete_clamps_file_index_when_last_file_removed() {
-        let (_tmp, mut app) = app_with_real_files(&[
-            (FileKind::Memory, "a.md"),
-            (FileKind::Memory, "b.md"),
-        ]);
+        let (_tmp, mut app) =
+            app_with_real_files(&[(FileKind::Memory, "a.md"), (FileKind::Memory, "b.md")]);
         app.file_index = 1; // delete the last file
         app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
         app.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
