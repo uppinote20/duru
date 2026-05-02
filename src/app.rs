@@ -381,8 +381,7 @@ impl App {
 
 /// CLAUDE.md beats MEMORY.md because the user is asking "what does this
 /// project want me to do?" — primary instructions, not the auto-memory
-/// index. Returns `None` when `files` is empty so the caller can stay in
-/// Sessions instead of switching to a blank preview.
+/// index.
 fn pick_jump_target(files: &[MemoryFile]) -> Option<usize> {
     files
         .iter()
